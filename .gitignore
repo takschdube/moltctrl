@@ -1,0 +1,24 @@
+# Rust build
+/target
+Cargo.lock
+
+# moltctrl state
+.moltctrl/
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test_tmp/
+/tests/test_helper/bats-*/
+
+# Build
+*.bak

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Mock docker binary for CI testing
+# Simulates basic docker/compose commands without requiring Docker
+
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+    info)
+        echo "Mock Docker info"
+        exit 0
+        ;;
+    --version)
+        echo "Docker version 24.0.0-mock, build mock"
+        exit 0
+        ;;
+    pull)
+        exit 0
+        ;;
+    compose)
+        # Skip compose-level flags (-p, -f) to find the subcommand
+        SUBCMD=""
+        compose_args=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -p) shift 2 ;;
+                -f) shift 2 ;;
+                --project-name) shift 2 ;;
+                --file) shift 2 ;;
+                *)
+                    if [[ -z "$SUBCMD" ]]; then
+                        SUBCMD="$1"
+                        shift
+                    else
+                        compose_args+=("$1")
+                        shift
+                    fi
+                    ;;
+            esac
+        done
+        set -- "${compose_args[@]+"${compose_args[@]}"}"
+
+        case "$SUBCMD" in
+            version)
+                if [[ "${1:-}" == "--short" ]]; then
+                    echo "2.24.0"
+                else
+                    echo "Docker Compose version v2.24.0-mock"
+                fi
+                exit 0
+                ;;
+            up|down|stop|restart)
+                exit 0
+                ;;
+            ps)
+                format=""
+                while [[ $# -gt 0 ]]; do
+                    case "$1" in
+                        --format) format="$2"; shift 2 ;;
+                        *)        shift ;;
+                    esac
+                done
+                if [[ "$format" == "json" ]]; then
+                    echo '{"Name":"mock-container","State":"running","Health":"healthy"}'
+                else
+                    echo "NAME            STATE    HEALTH"
+                    echo "mock-container  running  healthy"
+                fi
+                exit 0
+                ;;
+            logs)
+                echo "[mock] Container log output"
+                exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+        ;;
+    *)
+        exit 0
+        ;;
+esac

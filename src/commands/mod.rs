@@ -1,0 +1,12 @@
+pub mod chat_cmd;
+pub mod create;
+pub mod destroy;
+pub mod doctor;
+pub mod lifecycle;
+pub mod list;
+pub mod logs;
+pub mod open;
+pub mod pair;
+pub mod status;
+pub mod token_cmd;
+pub mod update;

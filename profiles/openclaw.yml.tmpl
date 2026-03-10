@@ -1,0 +1,66 @@
+version: "3.8"
+
+services:
+  openclaw:
+    image: ${MOLTCTRL_IMAGE}
+    container_name: ${MOLTCTRL_CONTAINER_NAME}
+    restart: unless-stopped
+
+    # --- Security hardening ---
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+
+    # --- Resource limits ---
+    mem_limit: ${MOLTCTRL_MEM_LIMIT}
+    memswap_limit: ${MOLTCTRL_MEMSWAP_LIMIT}
+    cpus: ${MOLTCTRL_CPUS}
+    pids_limit: ${MOLTCTRL_PIDS_LIMIT}
+
+    # --- Network ---
+    ports:
+      - "127.0.0.1:${MOLTCTRL_PORT}:18789"
+
+    # --- Environment ---
+    env_file:
+      - ${MOLTCTRL_ENV_FILE}
+
+    # --- Volumes (named only, no bind mounts) ---
+    volumes:
+      - ${MOLTCTRL_VOLUME_PREFIX}_data:/app/data
+      - ${MOLTCTRL_VOLUME_PREFIX}_config:/app/config
+      - ${MOLTCTRL_VOLUME_PREFIX}_logs:/app/logs
+      - ${MOLTCTRL_VOLUME_PREFIX}_cache:/app/cache
+      - ${MOLTCTRL_VOLUME_PREFIX}_workspace:/app/workspace
+      - ${MOLTCTRL_VOLUME_PREFIX}_skills:/app/skills
+      - ${MOLTCTRL_VOLUME_PREFIX}_tmp:/tmp
+
+    # --- Logging ---
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # --- Health check ---
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:18789/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  ${MOLTCTRL_VOLUME_PREFIX}_data:
+  ${MOLTCTRL_VOLUME_PREFIX}_config:
+  ${MOLTCTRL_VOLUME_PREFIX}_logs:
+  ${MOLTCTRL_VOLUME_PREFIX}_cache:
+  ${MOLTCTRL_VOLUME_PREFIX}_workspace:
+  ${MOLTCTRL_VOLUME_PREFIX}_skills:
+  ${MOLTCTRL_VOLUME_PREFIX}_tmp:

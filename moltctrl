@@ -1,0 +1,1574 @@
+#!/usr/bin/env bash
+# moltctrl — Security-hardened OpenClaw AI agent instance manager
+# https://github.com/moltctrl/moltctrl
+
+# Only set strict mode when running as main (not when sourced for testing)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    set -euo pipefail
+fi
+
+# =============================================================================
+# Section 1: Constants & Globals
+# =============================================================================
+
+MOLTCTRL_VERSION="0.1.0"
+MOLTCTRL_DIR="${MOLTCTRL_DIR:-${HOME}/.moltctrl}"
+MOLTCTRL_INSTANCES_DIR="${MOLTCTRL_DIR}/instances"
+MOLTCTRL_DEFAULT_IMAGE="ghcr.io/openclaw/openclaw:latest"
+MOLTCTRL_PORT_MIN=18789
+MOLTCTRL_PORT_MAX=18889
+MOLTCTRL_DEFAULT_MEM="2g"
+MOLTCTRL_DEFAULT_CPUS="2"
+MOLTCTRL_DEFAULT_PIDS="256"
+MOLTCTRL_COMPOSE_PREFIX="moltctrl"
+
+# Resolve the directory containing the moltctrl script (for finding profiles/)
+MOLTCTRL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Locate profiles directory: installed location or local repo
+if [[ -d "/usr/local/share/moltctrl/profiles" ]]; then
+    MOLTCTRL_PROFILES_DIR="/usr/local/share/moltctrl/profiles"
+elif [[ -d "${MOLTCTRL_SCRIPT_DIR}/profiles" ]]; then
+    MOLTCTRL_PROFILES_DIR="${MOLTCTRL_SCRIPT_DIR}/profiles"
+else
+    MOLTCTRL_PROFILES_DIR=""
+fi
+
+# Global flags
+VERBOSE=0
+NO_COLOR=0
+FORCE=0
+
+# =============================================================================
+# Section 2: Color & Output
+# =============================================================================
+
+_color_enabled() {
+    [[ "${NO_COLOR}" -eq 0 ]] && [[ -t 1 ]]
+}
+
+_c() {
+    local code="$1"
+    shift
+    if _color_enabled; then
+        printf '\033[%sm%s\033[0m' "$code" "$*"
+    else
+        printf '%s' "$*"
+    fi
+}
+
+info()    { printf '%s %s\n' "$(_c '1;34' '::' )" "$*"; }
+warn()    { printf '%s %s\n' "$(_c '1;33' 'warning:')" "$*" >&2; }
+error()   { printf '%s %s\n' "$(_c '1;31' 'error:')" "$*" >&2; }
+success() { printf '%s %s\n' "$(_c '1;32' '✓')" "$*"; }
+debug()   {
+    if [[ "$VERBOSE" -eq 1 ]]; then
+        printf '%s %s\n' "$(_c '0;90' 'debug:')" "$*" >&2
+    fi
+}
+
+die() {
+    error "$@"
+    exit 1
+}
+
+SPINNER_PID=""
+
+spinner_start() {
+    local msg="${1:-Working...}"
+    if [[ -t 1 ]] && [[ "${NO_COLOR}" -eq 0 ]]; then
+        (
+            local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+            local i=0
+            while true; do
+                printf '\r\033[1;35m%s\033[0m %s' "${frames[$i]}" "$msg"
+                i=$(( (i + 1) % ${#frames[@]} ))
+                sleep 0.1
+            done
+        ) &
+        SPINNER_PID=$!
+        disown "$SPINNER_PID" 2>/dev/null
+    fi
+}
+
+spinner_stop() {
+    if [[ -n "${SPINNER_PID}" ]]; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+        printf '\r\033[K'
+        SPINNER_PID=""
+    fi
+}
+
+# Clean up spinner on exit (only when running as main)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    trap 'spinner_stop' EXIT
+fi
+
+# =============================================================================
+# Section 3: Validation
+# =============================================================================
+
+validate_name() {
+    local name="$1"
+    if [[ -z "$name" ]]; then
+        die "Instance name is required"
+    fi
+    if [[ ! "$name" =~ ^[a-zA-Z][a-zA-Z0-9_-]{0,62}$ ]]; then
+        die "Invalid instance name '${name}': must start with a letter, contain only alphanumerics/hyphens/underscores, max 63 chars"
+    fi
+}
+
+validate_port() {
+    local port="$1"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+        die "Invalid port '${port}': must be a number between 1024 and 65535"
+    fi
+}
+
+validate_provider() {
+    local provider="$1"
+    case "$provider" in
+        anthropic|openai|google|aws-bedrock|openrouter|ollama) return 0 ;;
+        *) die "Unknown provider '${provider}'. Valid: anthropic, openai, google, aws-bedrock, openrouter, ollama" ;;
+    esac
+}
+
+require_instance() {
+    local name="$1"
+    validate_name "$name"
+    local instance_json
+    instance_json="$(instance_dir "$name")/instance.json"
+    if [[ ! -f "$instance_json" ]]; then
+        die "Instance '${name}' not found. Use 'moltctrl list' to see instances."
+    fi
+}
+
+require_docker() {
+    if ! command -v docker &>/dev/null; then
+        die "Docker is not installed. Run 'moltctrl doctor' or install Docker first."
+    fi
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running or you don't have permission. Try 'sudo systemctl start docker' or add yourself to the docker group."
+    fi
+}
+
+require_jq() {
+    if ! command -v jq &>/dev/null; then
+        die "jq is not installed. Run: sudo apt-get install jq"
+    fi
+}
+
+ensure_dirs() {
+    mkdir -p "${MOLTCTRL_DIR}" "${MOLTCTRL_INSTANCES_DIR}"
+}
+
+# =============================================================================
+# Section 4: JSON State
+# =============================================================================
+
+instance_dir() {
+    local name="$1"
+    echo "${MOLTCTRL_INSTANCES_DIR}/${name}"
+}
+
+instance_json() {
+    local name="$1"
+    echo "$(instance_dir "$name")/instance.json"
+}
+
+instance_get() {
+    local name="$1"
+    local key="$2"
+    local json_file
+    json_file="$(instance_json "$name")"
+    if [[ ! -f "$json_file" ]]; then
+        return 1
+    fi
+    jq -r ".${key} // empty" "$json_file"
+}
+
+instance_set() {
+    local name="$1"
+    local key="$2"
+    local value="$3"
+    local json_file tmp_file
+    json_file="$(instance_json "$name")"
+    tmp_file="${json_file}.tmp"
+
+    jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$json_file" > "$tmp_file"
+    mv "$tmp_file" "$json_file"
+}
+
+instance_create_json() {
+    local name="$1"
+    local port="$2"
+    local provider="$3"
+    local model="$4"
+    local image="$5"
+    local json_file
+    json_file="$(instance_json "$name")"
+
+    jq -n \
+        --arg name "$name" \
+        --arg port "$port" \
+        --arg provider "$provider" \
+        --arg model "$model" \
+        --arg image "$image" \
+        --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg status "created" \
+        '{
+            name: $name,
+            port: ($port | tonumber),
+            provider: $provider,
+            model: $model,
+            image: $image,
+            created: $created,
+            status: $status,
+            paired_keys: []
+        }' > "$json_file"
+}
+
+instance_list_names() {
+    if [[ ! -d "${MOLTCTRL_INSTANCES_DIR}" ]]; then
+        return 0
+    fi
+    local dir
+    for dir in "${MOLTCTRL_INSTANCES_DIR}"/*/; do
+        [[ -d "$dir" ]] || continue
+        local name
+        name="$(basename "$dir")"
+        if [[ -f "${dir}/instance.json" ]]; then
+            echo "$name"
+        fi
+    done
+}
+
+# =============================================================================
+# Section 5: Port Allocation
+# =============================================================================
+
+port_in_use_by_instance() {
+    local port="$1"
+    local name
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        local used_port
+        used_port="$(instance_get "$name" "port" 2>/dev/null)" || continue
+        if [[ "$used_port" == "$port" ]]; then
+            return 0
+        fi
+    done < <(instance_list_names)
+    return 1
+}
+
+port_listening() {
+    local port="$1"
+    if command -v ss &>/dev/null; then
+        ss -tln 2>/dev/null | grep -q ":${port} " && return 0
+    elif command -v netstat &>/dev/null; then
+        netstat -tln 2>/dev/null | grep -q ":${port} " && return 0
+    fi
+    return 1
+}
+
+allocate_port() {
+    local port
+    for (( port = MOLTCTRL_PORT_MIN; port <= MOLTCTRL_PORT_MAX; port++ )); do
+        if ! port_in_use_by_instance "$port" && ! port_listening "$port"; then
+            echo "$port"
+            return 0
+        fi
+    done
+    die "No available ports in range ${MOLTCTRL_PORT_MIN}-${MOLTCTRL_PORT_MAX}"
+}
+
+# =============================================================================
+# Section 6: Provider Resolution
+# =============================================================================
+
+provider_env_key() {
+    local provider="$1"
+    case "$provider" in
+        anthropic)    echo "ANTHROPIC_API_KEY" ;;
+        openai)       echo "OPENAI_API_KEY" ;;
+        google)       echo "GOOGLE_API_KEY" ;;
+        aws-bedrock)  echo "AWS_ACCESS_KEY_ID" ;;
+        openrouter)   echo "OPENROUTER_API_KEY" ;;
+        ollama)       echo "" ;;
+        *)            echo "" ;;
+    esac
+}
+
+provider_default_model() {
+    local provider="$1"
+    case "$provider" in
+        anthropic)    echo "claude-sonnet-4-20250514" ;;
+        openai)       echo "gpt-4o" ;;
+        google)       echo "gemini-2.0-flash" ;;
+        aws-bedrock)  echo "anthropic.claude-sonnet-4-20250514-v1:0" ;;
+        openrouter)   echo "anthropic/claude-sonnet-4-20250514" ;;
+        ollama)       echo "llama3.1" ;;
+        *)            echo "" ;;
+    esac
+}
+
+resolve_provider() {
+    local flag_provider="${1:-}"
+    local flag_api_key="${2:-}"
+
+    local provider=""
+    local api_key=""
+
+    # 1. Flag takes priority
+    if [[ -n "$flag_provider" ]]; then
+        provider="$flag_provider"
+    # 2. Environment variable
+    elif [[ -n "${MOLTCTRL_PROVIDER:-}" ]]; then
+        provider="$MOLTCTRL_PROVIDER"
+    fi
+
+    # Validate if we have one
+    if [[ -n "$provider" ]]; then
+        validate_provider "$provider"
+    else
+        # 3. Interactive prompt
+        if [[ ! -t 0 ]]; then
+            die "No provider specified. Use --provider or set MOLTCTRL_PROVIDER"
+        fi
+        echo ""
+        echo "Select an AI provider:"
+        echo "  1) anthropic    (Claude)"
+        echo "  2) openai       (GPT)"
+        echo "  3) google       (Gemini)"
+        echo "  4) aws-bedrock  (AWS Bedrock)"
+        echo "  5) openrouter   (OpenRouter)"
+        echo "  6) ollama       (Local models)"
+        echo ""
+        local choice
+        read -r -p "Provider [1-6]: " choice < /dev/tty
+        case "$choice" in
+            1|anthropic)    provider="anthropic" ;;
+            2|openai)       provider="openai" ;;
+            3|google)       provider="google" ;;
+            4|aws-bedrock)  provider="aws-bedrock" ;;
+            5|openrouter)   provider="openrouter" ;;
+            6|ollama)       provider="ollama" ;;
+            *) die "Invalid choice: ${choice}" ;;
+        esac
+    fi
+
+    # Resolve API key
+    local env_key
+    env_key="$(provider_env_key "$provider")"
+
+    if [[ -n "$flag_api_key" ]]; then
+        api_key="$flag_api_key"
+    elif [[ -n "$env_key" ]] && [[ -n "${!env_key:-}" ]]; then
+        api_key="${!env_key}"
+        debug "Using API key from \$${env_key}"
+    elif [[ "$provider" != "ollama" ]]; then
+        if [[ -t 0 ]]; then
+            read -r -s -p "Enter API key for ${provider}: " api_key < /dev/tty
+            echo "" >&2
+            if [[ -z "$api_key" ]]; then
+                die "API key is required for provider '${provider}'"
+            fi
+        else
+            die "No API key provided. Use --api-key, set \$${env_key}, or run interactively."
+        fi
+    fi
+
+    # Return as provider:api_key
+    echo "${provider}:${api_key}"
+}
+
+# =============================================================================
+# Section 7: Template Rendering
+# =============================================================================
+
+render_template() {
+    local template="$1"
+    local output="$2"
+
+    if [[ ! -f "$template" ]]; then
+        die "Template not found: ${template}"
+    fi
+
+    # Only substitute MOLTCTRL_* variables (safe, no accidental substitution)
+    # shellcheck disable=SC2016
+    local var_list='${MOLTCTRL_IMAGE} ${MOLTCTRL_CONTAINER_NAME} ${MOLTCTRL_MEM_LIMIT} ${MOLTCTRL_MEMSWAP_LIMIT} ${MOLTCTRL_CPUS} ${MOLTCTRL_PIDS_LIMIT} ${MOLTCTRL_PORT} ${MOLTCTRL_ENV_FILE} ${MOLTCTRL_VOLUME_PREFIX}'
+
+    envsubst "$var_list" < "$template" > "$output"
+}
+
+# =============================================================================
+# Section 8: Docker Compose Helpers
+# =============================================================================
+
+compose_file() {
+    local name="$1"
+    echo "$(instance_dir "$name")/docker-compose.yml"
+}
+
+dc() {
+    local name="$1"
+    shift
+    local project="${MOLTCTRL_COMPOSE_PREFIX}-${name}"
+    local cf
+    cf="$(compose_file "$name")"
+    docker compose -p "$project" -f "$cf" "$@"
+}
+
+compose_status() {
+    local name="$1"
+    local result
+    result="$(dc "$name" ps --format json 2>/dev/null)" || echo ""
+    if [[ -z "$result" ]]; then
+        echo "stopped"
+        return
+    fi
+    # docker compose ps --format json outputs one JSON object per line
+    local state
+    state="$(echo "$result" | head -1 | jq -r '.State // "unknown"' 2>/dev/null)" || state="unknown"
+    echo "$state"
+}
+
+compose_health() {
+    local name="$1"
+    local result
+    result="$(dc "$name" ps --format json 2>/dev/null)" || echo ""
+    if [[ -z "$result" ]]; then
+        echo "unknown"
+        return
+    fi
+    local health
+    health="$(echo "$result" | head -1 | jq -r '.Health // "unknown"' 2>/dev/null)" || health="unknown"
+    echo "$health"
+}
+
+wait_healthy() {
+    local name="$1"
+    local timeout="${2:-120}"
+    local elapsed=0
+    local interval=3
+
+    spinner_start "Waiting for ${name} to become healthy..."
+
+    while (( elapsed < timeout )); do
+        local health
+        health="$(compose_health "$name")"
+        if [[ "$health" == "healthy" ]]; then
+            spinner_stop
+            return 0
+        fi
+        local state
+        state="$(compose_status "$name")"
+        if [[ "$state" == "exited" ]] || [[ "$state" == "dead" ]]; then
+            spinner_stop
+            return 1
+        fi
+        sleep "$interval"
+        elapsed=$(( elapsed + interval ))
+    done
+
+    spinner_stop
+    return 1
+}
+
+# =============================================================================
+# Section 9: Commands
+# =============================================================================
+
+# --- cmd_create ---
+cmd_create() {
+    local name=""
+    local provider_flag=""
+    local api_key_flag=""
+    local model_flag=""
+    local port_flag=""
+    local image_flag=""
+    local mem_flag=""
+    local cpus_flag=""
+    local pids_flag=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --provider)   provider_flag="$2"; shift 2 ;;
+            --api-key)    api_key_flag="$2"; shift 2 ;;
+            --model)      model_flag="$2"; shift 2 ;;
+            --port)       port_flag="$2"; shift 2 ;;
+            --image)      image_flag="$2"; shift 2 ;;
+            --mem)        mem_flag="$2"; shift 2 ;;
+            --cpus)       cpus_flag="$2"; shift 2 ;;
+            --pids)       pids_flag="$2"; shift 2 ;;
+            -*)           die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl create <name> [options]"
+    validate_name "$name"
+    require_docker
+    require_jq
+    ensure_dirs
+
+    # Check for existing instance
+    if [[ -d "$(instance_dir "$name")" ]]; then
+        die "Instance '${name}' already exists. Destroy it first or choose another name."
+    fi
+
+    # Resolve provider and API key
+    local provider_result
+    provider_result="$(resolve_provider "$provider_flag" "$api_key_flag")"
+    local provider="${provider_result%%:*}"
+    local api_key="${provider_result#*:}"
+
+    # Resolve model
+    local model
+    if [[ -n "$model_flag" ]]; then
+        model="$model_flag"
+    else
+        model="$(provider_default_model "$provider")"
+    fi
+
+    # Resolve port
+    local port
+    if [[ -n "$port_flag" ]]; then
+        validate_port "$port_flag"
+        port="$port_flag"
+    else
+        port="$(allocate_port)"
+    fi
+
+    # Resolve image
+    local image="${image_flag:-$MOLTCTRL_DEFAULT_IMAGE}"
+
+    # Resource limits
+    local mem="${mem_flag:-$MOLTCTRL_DEFAULT_MEM}"
+    local cpus="${cpus_flag:-$MOLTCTRL_DEFAULT_CPUS}"
+    local pids="${pids_flag:-$MOLTCTRL_DEFAULT_PIDS}"
+
+    info "Creating instance '${name}'..."
+    debug "Provider: ${provider}, Model: ${model}, Port: ${port}, Image: ${image}"
+
+    # Create instance directory
+    local inst_dir
+    inst_dir="$(instance_dir "$name")"
+    mkdir -p "$inst_dir"
+
+    # Generate auth token
+    local token
+    if command -v openssl &>/dev/null; then
+        token="$(openssl rand -hex 32)"
+    else
+        token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+
+    # Write .env file
+    local env_file="${inst_dir}/.env"
+    {
+        echo "# moltctrl instance: ${name}"
+        echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo ""
+        echo "# Provider"
+        if [[ -n "$api_key" ]]; then
+            local env_key
+            env_key="$(provider_env_key "$provider")"
+            if [[ -n "$env_key" ]]; then
+                echo "${env_key}=${api_key}"
+            fi
+        fi
+        echo "OPENCLAW_PROVIDER=${provider}"
+        echo "OPENCLAW_MODEL=${model}"
+        echo ""
+        echo "# Security"
+        echo "OPENCLAW_SANDBOX_MODE=all"
+        echo "OPENCLAW_WORKSPACE_ACCESS=none"
+        echo "OPENCLAW_AUTH_TOKEN=${token}"
+    } > "$env_file"
+    chmod 600 "$env_file"
+
+    # Find template
+    local template=""
+    if [[ -n "$MOLTCTRL_PROFILES_DIR" ]] && [[ -f "${MOLTCTRL_PROFILES_DIR}/openclaw.yml.tmpl" ]]; then
+        template="${MOLTCTRL_PROFILES_DIR}/openclaw.yml.tmpl"
+    else
+        die "Cannot find profile template. Ensure profiles/openclaw.yml.tmpl exists."
+    fi
+
+    # Render docker-compose.yml
+    export MOLTCTRL_IMAGE="$image"
+    export MOLTCTRL_CONTAINER_NAME="${MOLTCTRL_COMPOSE_PREFIX}-${name}"
+    export MOLTCTRL_MEM_LIMIT="$mem"
+    export MOLTCTRL_MEMSWAP_LIMIT="$mem"
+    export MOLTCTRL_CPUS="$cpus"
+    export MOLTCTRL_PIDS_LIMIT="$pids"
+    export MOLTCTRL_PORT="$port"
+    export MOLTCTRL_ENV_FILE="$env_file"
+    export MOLTCTRL_VOLUME_PREFIX="${MOLTCTRL_COMPOSE_PREFIX}_${name}"
+
+    local compose
+    compose="$(compose_file "$name")"
+    render_template "$template" "$compose"
+
+    # Save instance state
+    instance_create_json "$name" "$port" "$provider" "$model" "$image"
+    instance_set "$name" "token" "$token"
+    instance_set "$name" "mem" "$mem"
+    instance_set "$name" "cpus" "$cpus"
+    instance_set "$name" "pids" "$pids"
+
+    # Pull image
+    spinner_start "Pulling image ${image}..."
+    if ! docker pull "$image" &>/dev/null; then
+        spinner_stop
+        warn "Could not pull image '${image}'. It may need to be built or may not exist yet."
+    else
+        spinner_stop
+    fi
+
+    # Start the container
+    spinner_start "Starting instance..."
+    if dc "$name" up -d &>/dev/null; then
+        spinner_stop
+        instance_set "$name" "status" "running"
+
+        if wait_healthy "$name" 120; then
+            success "Instance '${name}' is healthy and running"
+        else
+            warn "Instance started but health check hasn't passed yet. Check: moltctrl logs ${name}"
+        fi
+    else
+        spinner_stop
+        instance_set "$name" "status" "error"
+        die "Failed to start instance '${name}'. Check: moltctrl logs ${name}"
+    fi
+
+    echo ""
+    info "Instance details:"
+    echo "  Name:     ${name}"
+    echo "  Provider: ${provider}"
+    echo "  Model:    ${model}"
+    echo "  Port:     ${port}"
+    echo "  URL:      http://127.0.0.1:${port}"
+    echo "  Token:    ${token}"
+    echo ""
+    info "Quick start:"
+    echo "  moltctrl open ${name}     # Open in browser"
+    echo "  moltctrl chat ${name}     # Chat in terminal"
+    echo "  moltctrl logs ${name}     # View logs"
+}
+
+# --- cmd_destroy ---
+cmd_destroy() {
+    local name=""
+    local force=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force|-f) force=1; shift ;;
+            -*)         die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl destroy <name> [--force]"
+    require_instance "$name"
+    require_jq
+
+    if [[ "$force" -eq 0 ]] && [[ "${FORCE}" -eq 0 ]]; then
+        local answer
+        read -r -p "Destroy instance '${name}' and all its data? [y/N] " answer < /dev/tty
+        if [[ ! "$answer" =~ ^[yY] ]]; then
+            info "Aborted."
+            return 0
+        fi
+    fi
+
+    info "Destroying instance '${name}'..."
+
+    # Stop and remove containers + volumes
+    if command -v docker &>/dev/null && docker info &>/dev/null; then
+        local cf
+        cf="$(compose_file "$name")"
+        if [[ -f "$cf" ]]; then
+            spinner_start "Removing containers and volumes..."
+            dc "$name" down -v --remove-orphans &>/dev/null || true
+            spinner_stop
+        fi
+    fi
+
+    # Remove instance directory
+    local inst_dir
+    inst_dir="$(instance_dir "$name")"
+    rm -rf "$inst_dir"
+
+    success "Instance '${name}' destroyed"
+}
+
+# --- cmd_list ---
+cmd_list() {
+    require_jq
+    ensure_dirs
+
+    local names
+    names="$(instance_list_names)"
+
+    if [[ -z "$names" ]]; then
+        info "No instances found. Create one with: moltctrl create <name>"
+        return 0
+    fi
+
+    printf '%-20s %-12s %-12s %-8s %-10s %s\n' "NAME" "PROVIDER" "STATUS" "PORT" "HEALTH" "CREATED"
+    printf '%-20s %-12s %-12s %-8s %-10s %s\n' "----" "--------" "------" "----" "------" "-------"
+
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        local provider port created status health
+        provider="$(instance_get "$name" "provider" 2>/dev/null)" || provider="?"
+        port="$(instance_get "$name" "port" 2>/dev/null)" || port="?"
+        created="$(instance_get "$name" "created" 2>/dev/null)" || created="?"
+        status="$(instance_get "$name" "status" 2>/dev/null)" || status="?"
+
+        # Try to get live status from Docker
+        if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            local live_status
+            live_status="$(compose_status "$name" 2>/dev/null)" || live_status=""
+            if [[ -n "$live_status" ]] && [[ "$live_status" != "stopped" ]]; then
+                status="$live_status"
+            fi
+            health="$(compose_health "$name" 2>/dev/null)" || health="-"
+        else
+            health="-"
+        fi
+
+        # Truncate created date
+        created="${created%%T*}"
+
+        printf '%-20s %-12s %-12s %-8s %-10s %s\n' "$name" "$provider" "$status" "$port" "$health" "$created"
+    done <<< "$names"
+}
+
+# --- cmd_status ---
+cmd_status() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl status <name>"
+    require_instance "$name"
+    require_jq
+
+    local json_file
+    json_file="$(instance_json "$name")"
+    local data
+    data="$(cat "$json_file")"
+
+    echo "Instance: $(echo "$data" | jq -r '.name')"
+    echo "Provider: $(echo "$data" | jq -r '.provider')"
+    echo "Model:    $(echo "$data" | jq -r '.model')"
+    echo "Image:    $(echo "$data" | jq -r '.image')"
+    echo "Port:     $(echo "$data" | jq -r '.port')"
+    echo "Created:  $(echo "$data" | jq -r '.created')"
+    echo "Mem:      $(echo "$data" | jq -r '.mem // "default"')"
+    echo "CPUs:     $(echo "$data" | jq -r '.cpus // "default"')"
+    echo ""
+
+    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        local status health
+        status="$(compose_status "$name")"
+        health="$(compose_health "$name")"
+        echo "Docker Status: ${status}"
+        echo "Health:        ${health}"
+    else
+        echo "Docker Status: (docker not available)"
+    fi
+}
+
+# --- cmd_start ---
+cmd_start() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl start <name>"
+    require_instance "$name"
+    require_docker
+
+    info "Starting instance '${name}'..."
+    spinner_start "Starting containers..."
+    if dc "$name" up -d &>/dev/null; then
+        spinner_stop
+        instance_set "$name" "status" "running"
+        success "Instance '${name}' started"
+    else
+        spinner_stop
+        die "Failed to start instance '${name}'"
+    fi
+}
+
+# --- cmd_stop ---
+cmd_stop() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl stop <name>"
+    require_instance "$name"
+    require_docker
+
+    info "Stopping instance '${name}'..."
+    spinner_start "Stopping containers..."
+    if dc "$name" stop &>/dev/null; then
+        spinner_stop
+        instance_set "$name" "status" "stopped"
+        success "Instance '${name}' stopped"
+    else
+        spinner_stop
+        die "Failed to stop instance '${name}'"
+    fi
+}
+
+# --- cmd_restart ---
+cmd_restart() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl restart <name>"
+    require_instance "$name"
+    require_docker
+
+    info "Restarting instance '${name}'..."
+    spinner_start "Restarting containers..."
+    if dc "$name" restart &>/dev/null; then
+        spinner_stop
+        instance_set "$name" "status" "running"
+        success "Instance '${name}' restarted"
+    else
+        spinner_stop
+        die "Failed to restart instance '${name}'"
+    fi
+}
+
+# --- cmd_logs ---
+cmd_logs() {
+    local name=""
+    local follow=0
+    local tail="100"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --follow|-f) follow=1; shift ;;
+            --tail)      tail="$2"; shift 2 ;;
+            -*)          die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl logs <name> [--follow] [--tail N]"
+    require_instance "$name"
+    require_docker
+
+    local args=("--tail" "$tail")
+    if [[ "$follow" -eq 1 ]]; then
+        args+=("-f")
+    fi
+
+    dc "$name" logs "${args[@]}"
+}
+
+# --- cmd_doctor ---
+cmd_doctor() {
+    echo "moltctrl doctor - Checking system requirements"
+    echo "================================================"
+    echo ""
+
+    local issues=0
+
+    # Docker
+    printf '  %-20s' "Docker:"
+    if command -v docker &>/dev/null; then
+        local docker_version
+        docker_version="$(docker --version 2>/dev/null | head -1)"
+        if docker info &>/dev/null 2>&1; then
+            success "$docker_version"
+        else
+            error "installed but daemon not running"
+            issues=$((issues + 1))
+        fi
+    else
+        error "not installed"
+        issues=$((issues + 1))
+    fi
+
+    # Docker Compose v2
+    printf '  %-20s' "Docker Compose:"
+    if docker compose version &>/dev/null 2>&1; then
+        local compose_version
+        compose_version="$(docker compose version --short 2>/dev/null)"
+        success "v${compose_version}"
+    else
+        error "not available (need Docker Compose v2)"
+        issues=$((issues + 1))
+    fi
+
+    # jq
+    printf '  %-20s' "jq:"
+    if command -v jq &>/dev/null; then
+        success "$(jq --version 2>/dev/null)"
+    else
+        error "not installed"
+        issues=$((issues + 1))
+    fi
+
+    # envsubst
+    printf '  %-20s' "envsubst:"
+    if command -v envsubst &>/dev/null; then
+        success "available"
+    else
+        error "not installed (gettext-base)"
+        issues=$((issues + 1))
+    fi
+
+    # openssl
+    printf '  %-20s' "openssl:"
+    if command -v openssl &>/dev/null; then
+        success "available"
+    else
+        warn "not installed (will use /dev/urandom fallback)"
+    fi
+
+    # websocat
+    printf '  %-20s' "websocat:"
+    if command -v websocat &>/dev/null; then
+        success "available"
+    else
+        warn "not installed (needed for 'moltctrl chat')"
+    fi
+
+    echo ""
+    if [[ "$issues" -eq 0 ]]; then
+        success "All required dependencies are installed"
+    else
+        error "${issues} issue(s) found. Run install.sh to fix."
+    fi
+
+    return "$issues"
+}
+
+# --- cmd_token ---
+cmd_token() {
+    local name=""
+    local regenerate=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --regenerate) regenerate=1; shift ;;
+            -*)           die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl token <name> [--regenerate]"
+    require_instance "$name"
+    require_jq
+
+    if [[ "$regenerate" -eq 1 ]]; then
+        local new_token
+        if command -v openssl &>/dev/null; then
+            new_token="$(openssl rand -hex 32)"
+        else
+            new_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        fi
+        instance_set "$name" "token" "$new_token"
+
+        # Update .env file
+        local env_file
+        env_file="$(instance_dir "$name")/.env"
+        if [[ -f "$env_file" ]]; then
+            local tmp_env="${env_file}.tmp"
+            sed "s/^OPENCLAW_AUTH_TOKEN=.*/OPENCLAW_AUTH_TOKEN=${new_token}/" "$env_file" > "$tmp_env"
+            mv "$tmp_env" "$env_file"
+            chmod 600 "$env_file"
+        fi
+
+        success "Token regenerated. Restart the instance to apply."
+        echo "$new_token"
+    else
+        local token
+        token="$(instance_get "$name" "token")"
+        if [[ -z "$token" ]]; then
+            die "No token found for instance '${name}'"
+        fi
+        echo "$token"
+    fi
+}
+
+# --- cmd_open ---
+cmd_open() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl open <name>"
+    require_instance "$name"
+    require_jq
+
+    local port
+    port="$(instance_get "$name" "port")"
+    local url="http://127.0.0.1:${port}"
+
+    info "Opening ${url} ..."
+
+    if command -v xdg-open &>/dev/null; then
+        xdg-open "$url" 2>/dev/null
+    elif command -v open &>/dev/null; then
+        open "$url"
+    else
+        info "Open this URL in your browser: ${url}"
+    fi
+}
+
+# --- cmd_pair ---
+cmd_pair() {
+    local subcmd="${1:-}"
+    shift || true
+
+    case "$subcmd" in
+        approve) cmd_pair_approve "$@" ;;
+        list)    cmd_pair_list "$@" ;;
+        revoke)  cmd_pair_revoke "$@" ;;
+        *)       die "Usage: moltctrl pair <approve|list|revoke> <name> [options]" ;;
+    esac
+}
+
+cmd_pair_approve() {
+    local name=""
+    local label=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --label)  label="$2"; shift 2 ;;
+            -*)       die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl pair approve <name> [--label LABEL]"
+    require_instance "$name"
+    require_jq
+
+    # Generate a pairing key
+    local key
+    if command -v openssl &>/dev/null; then
+        key="$(openssl rand -hex 16)"
+    else
+        key="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+
+    [[ -z "$label" ]] && label="key-$(date +%s)"
+
+    # Add to paired_keys array
+    local json_file
+    json_file="$(instance_json "$name")"
+    local tmp_file="${json_file}.tmp"
+    jq --arg key "$key" --arg label "$label" \
+        '.paired_keys += [{"key": $key, "label": $label, "created": (now | todate)}]' \
+        "$json_file" > "$tmp_file"
+    mv "$tmp_file" "$json_file"
+
+    success "Pairing key created"
+    echo "  Label: ${label}"
+    echo "  Key:   ${key}"
+}
+
+cmd_pair_list() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl pair list <name>"
+    require_instance "$name"
+    require_jq
+
+    local json_file
+    json_file="$(instance_json "$name")"
+    local count
+    count="$(jq '.paired_keys | length' "$json_file")"
+
+    if [[ "$count" -eq 0 ]]; then
+        info "No pairing keys for instance '${name}'"
+        return 0
+    fi
+
+    printf '%-20s %-36s %s\n' "LABEL" "KEY" "CREATED"
+    printf '%-20s %-36s %s\n' "-----" "---" "-------"
+    jq -r '.paired_keys[] | [.label, .key, .created] | @tsv' "$json_file" | \
+        while IFS=$'\t' read -r label key created; do
+            printf '%-20s %-36s %s\n' "$label" "$key" "$created"
+        done
+}
+
+cmd_pair_revoke() {
+    local name=""
+    local label=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --label)  label="$2"; shift 2 ;;
+            -*)       die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl pair revoke <name> --label LABEL"
+    [[ -z "$label" ]] && die "Usage: moltctrl pair revoke <name> --label LABEL"
+    require_instance "$name"
+    require_jq
+
+    local json_file
+    json_file="$(instance_json "$name")"
+    local tmp_file="${json_file}.tmp"
+
+    local before_count
+    before_count="$(jq '.paired_keys | length' "$json_file")"
+
+    jq --arg label "$label" '.paired_keys |= map(select(.label != $label))' "$json_file" > "$tmp_file"
+    mv "$tmp_file" "$json_file"
+
+    local after_count
+    after_count="$(jq '.paired_keys | length' "$json_file")"
+
+    if [[ "$before_count" -eq "$after_count" ]]; then
+        warn "No pairing key with label '${label}' found"
+    else
+        success "Pairing key '${label}' revoked"
+    fi
+}
+
+# --- cmd_update ---
+cmd_update() {
+    local name=""
+    local model_flag=""
+    local mem_flag=""
+    local cpus_flag=""
+    local pids_flag=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --model)  model_flag="$2"; shift 2 ;;
+            --mem)    mem_flag="$2"; shift 2 ;;
+            --cpus)   cpus_flag="$2"; shift 2 ;;
+            --pids)   pids_flag="$2"; shift 2 ;;
+            -*)       die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl update <name> [--model MODEL] [--mem MEM] [--cpus CPUS] [--pids PIDS]"
+    require_instance "$name"
+    require_jq
+
+    local changed=0
+
+    if [[ -n "$model_flag" ]]; then
+        instance_set "$name" "model" "$model_flag"
+        # Update .env
+        local env_file
+        env_file="$(instance_dir "$name")/.env"
+        if [[ -f "$env_file" ]]; then
+            local tmp_env="${env_file}.tmp"
+            sed "s/^OPENCLAW_MODEL=.*/OPENCLAW_MODEL=${model_flag}/" "$env_file" > "$tmp_env"
+            mv "$tmp_env" "$env_file"
+            chmod 600 "$env_file"
+        fi
+        info "Model updated to: ${model_flag}"
+        changed=1
+    fi
+
+    if [[ -n "$mem_flag" ]]; then
+        instance_set "$name" "mem" "$mem_flag"
+        info "Memory limit updated to: ${mem_flag}"
+        changed=1
+    fi
+
+    if [[ -n "$cpus_flag" ]]; then
+        instance_set "$name" "cpus" "$cpus_flag"
+        info "CPU limit updated to: ${cpus_flag}"
+        changed=1
+    fi
+
+    if [[ -n "$pids_flag" ]]; then
+        instance_set "$name" "pids" "$pids_flag"
+        info "PIDs limit updated to: ${pids_flag}"
+        changed=1
+    fi
+
+    if [[ "$changed" -eq 0 ]]; then
+        die "No updates specified. Use --model, --mem, --cpus, or --pids."
+    fi
+
+    # Re-render docker-compose.yml if resource limits changed
+    if [[ -n "$mem_flag" ]] || [[ -n "$cpus_flag" ]] || [[ -n "$pids_flag" ]]; then
+        local port image provider
+        port="$(instance_get "$name" "port")"
+        image="$(instance_get "$name" "image")"
+        provider="$(instance_get "$name" "provider")"
+
+        export MOLTCTRL_IMAGE="$image"
+        export MOLTCTRL_CONTAINER_NAME="${MOLTCTRL_COMPOSE_PREFIX}-${name}"
+        export MOLTCTRL_MEM_LIMIT="${mem_flag:-$(instance_get "$name" "mem")}"
+        export MOLTCTRL_MEMSWAP_LIMIT="${mem_flag:-$(instance_get "$name" "mem")}"
+        export MOLTCTRL_CPUS="${cpus_flag:-$(instance_get "$name" "cpus")}"
+        export MOLTCTRL_PIDS_LIMIT="${pids_flag:-$(instance_get "$name" "pids")}"
+        export MOLTCTRL_PORT="$port"
+        local env_path
+        env_path="$(instance_dir "$name")/.env"
+        export MOLTCTRL_ENV_FILE="$env_path"
+        export MOLTCTRL_VOLUME_PREFIX="${MOLTCTRL_COMPOSE_PREFIX}_${name}"
+
+        local template=""
+        if [[ -n "$MOLTCTRL_PROFILES_DIR" ]] && [[ -f "${MOLTCTRL_PROFILES_DIR}/openclaw.yml.tmpl" ]]; then
+            template="${MOLTCTRL_PROFILES_DIR}/openclaw.yml.tmpl"
+        fi
+        if [[ -n "$template" ]]; then
+            render_template "$template" "$(compose_file "$name")"
+        fi
+    fi
+
+    warn "Restart the instance for changes to take effect: moltctrl restart ${name}"
+}
+
+# --- cmd_chat ---
+cmd_chat() {
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -*) die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: moltctrl chat <name>"
+    require_instance "$name"
+    require_jq
+
+    if ! command -v websocat &>/dev/null; then
+        die "websocat is required for chat. Install it: cargo install websocat"
+    fi
+
+    local port token
+    port="$(instance_get "$name" "port")"
+    token="$(instance_get "$name" "token")"
+
+    local status
+    status="$(compose_status "$name" 2>/dev/null)"
+    if [[ "$status" != "running" ]]; then
+        die "Instance '${name}' is not running (status: ${status}). Start it first."
+    fi
+
+    local url="ws://127.0.0.1:${port}/ws"
+    info "Connecting to ${name} at ${url} ..."
+    info "Press Ctrl+C to disconnect"
+    echo ""
+
+    websocat -H "Authorization: Bearer ${token}" "$url"
+}
+
+# =============================================================================
+# Section 10: Usage/Help
+# =============================================================================
+
+usage() {
+    cat <<'USAGE'
+moltctrl — Security-hardened OpenClaw AI agent instance manager
+
+Usage: moltctrl <command> [options]
+
+Commands:
+  create <name>      Create and start a new instance
+  destroy <name>     Stop and remove an instance and its data
+  list               List all instances
+  status <name>      Show detailed instance status
+  start <name>       Start a stopped instance
+  stop <name>        Stop a running instance
+  restart <name>     Restart an instance
+  logs <name>        View instance logs
+  token <name>       Show or regenerate auth token
+  open <name>        Open instance in browser
+  pair <sub> <name>  Manage pairing keys (approve/list/revoke)
+  update <name>      Update instance configuration
+  chat <name>        Interactive WebSocket chat
+  doctor             Check system requirements
+  version            Show version
+  help               Show this help
+
+Global options:
+  --verbose, -v      Enable debug output
+  --no-color         Disable colored output
+  --force            Skip confirmation prompts
+
+Run 'moltctrl help <command>' for command-specific help.
+USAGE
+}
+
+usage_create() {
+    cat <<'USAGE'
+Usage: moltctrl create <name> [options]
+
+Create and start a new security-hardened OpenClaw instance.
+
+Options:
+  --provider NAME    AI provider (anthropic, openai, google, aws-bedrock, openrouter, ollama)
+  --api-key KEY      API key for the provider
+  --model MODEL      Model name (default: provider-specific)
+  --port PORT        Host port (default: auto-allocated 18789-18889)
+  --image IMAGE      Docker image (default: ghcr.io/openclaw/openclaw:latest)
+  --mem LIMIT        Memory limit (default: 2g)
+  --cpus LIMIT       CPU limit (default: 2)
+  --pids LIMIT       PID limit (default: 256)
+
+Examples:
+  moltctrl create myagent --provider anthropic --api-key sk-ant-...
+  moltctrl create dev --provider ollama --model llama3.1
+  ANTHROPIC_API_KEY=sk-... moltctrl create prod --provider anthropic
+USAGE
+}
+
+usage_destroy() {
+    cat <<'USAGE'
+Usage: moltctrl destroy <name> [--force]
+
+Stop and remove an instance, its containers, volumes, and configuration.
+
+Options:
+  --force, -f    Skip confirmation prompt
+USAGE
+}
+
+usage_logs() {
+    cat <<'USAGE'
+Usage: moltctrl logs <name> [--follow] [--tail N]
+
+View instance container logs.
+
+Options:
+  --follow, -f   Follow log output
+  --tail N       Number of lines to show (default: 100)
+USAGE
+}
+
+usage_token() {
+    cat <<'USAGE'
+Usage: moltctrl token <name> [--regenerate]
+
+Show or regenerate the auth token for an instance.
+
+Options:
+  --regenerate   Generate a new token (requires restart to apply)
+USAGE
+}
+
+usage_pair() {
+    cat <<'USAGE'
+Usage: moltctrl pair <subcommand> <name> [options]
+
+Manage pairing keys for an instance.
+
+Subcommands:
+  approve <name> [--label LABEL]    Create a new pairing key
+  list <name>                       List all pairing keys
+  revoke <name> --label LABEL       Revoke a pairing key
+USAGE
+}
+
+usage_update() {
+    cat <<'USAGE'
+Usage: moltctrl update <name> [options]
+
+Update instance configuration. Requires restart to apply.
+
+Options:
+  --model MODEL    Change the AI model
+  --mem LIMIT      Change memory limit
+  --cpus LIMIT     Change CPU limit
+  --pids LIMIT     Change PID limit
+USAGE
+}
+
+cmd_help() {
+    local topic="${1:-}"
+    case "$topic" in
+        create)  usage_create ;;
+        destroy) usage_destroy ;;
+        logs)    usage_logs ;;
+        token)   usage_token ;;
+        pair)    usage_pair ;;
+        update)  usage_update ;;
+        "")      usage ;;
+        *)       usage ;;
+    esac
+}
+
+cmd_version() {
+    echo "moltctrl v${MOLTCTRL_VERSION}"
+}
+
+# =============================================================================
+# Section 11: Main Dispatch
+# =============================================================================
+
+parse_global_flags() {
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --verbose|-v)  VERBOSE=1; shift ;;
+            --no-color)    NO_COLOR=1; shift ;;
+            --force)       FORCE=1; shift ;;
+            *)             args+=("$1"); shift ;;
+        esac
+    done
+    GLOBAL_ARGS=("${args[@]+"${args[@]}"}")
+}
+
+main() {
+    parse_global_flags "$@"
+    set -- "${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"}"
+
+    local command="${1:-help}"
+    shift || true
+
+    case "$command" in
+        create)   cmd_create "$@" ;;
+        destroy)  cmd_destroy "$@" ;;
+        list|ls)  cmd_list "$@" ;;
+        status)   cmd_status "$@" ;;
+        start)    cmd_start "$@" ;;
+        stop)     cmd_stop "$@" ;;
+        restart)  cmd_restart "$@" ;;
+        logs)     cmd_logs "$@" ;;
+        doctor)   cmd_doctor "$@" ;;
+        token)    cmd_token "$@" ;;
+        open)     cmd_open "$@" ;;
+        pair)     cmd_pair "$@" ;;
+        update)   cmd_update "$@" ;;
+        chat)     cmd_chat "$@" ;;
+        version)  cmd_version ;;
+        help)     cmd_help "$@" ;;
+        *)        error "Unknown command: ${command}"; echo ""; usage; exit 1 ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
