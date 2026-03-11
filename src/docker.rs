@@ -208,14 +208,12 @@ impl DockerCompose {
         Ok(Some("unknown".to_string()))
     }
 
-    /// Pull the Docker image
+    /// Pull the Docker image (streams progress to terminal)
     pub fn pull_image(image: &str) -> Result<bool> {
-        let output = Command::new("docker")
+        let status = Command::new("docker")
             .args(["pull", image])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
+            .status()
             .context("Failed to pull Docker image")?;
-        Ok(output.status.success())
+        Ok(status.success())
     }
 }

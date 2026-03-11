@@ -160,18 +160,13 @@ pub async fn run(
 
     state.save()?;
 
-    // Pull image
-    {
-        let spinner = output::spinner(&format!("Pulling image {}...", image));
-        if !DockerCompose::pull_image(image)? {
-            spinner.finish_and_clear();
-            output::warn(&format!(
-                "Could not pull image '{}'. It may need to be built or may not exist yet.",
-                image
-            ));
-        } else {
-            spinner.finish_and_clear();
-        }
+    // Pull image (streams progress directly to terminal)
+    output::info(&format!("Pulling image {}...", image));
+    if !DockerCompose::pull_image(image)? {
+        output::warn(&format!(
+            "Could not pull image '{}'. It may need to be built or may not exist yet.",
+            image
+        ));
     }
 
     // Start the container
