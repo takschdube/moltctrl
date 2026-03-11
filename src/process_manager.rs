@@ -36,6 +36,23 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
+/// Read the auth token from OpenClaw's config file.
+///
+/// After `openclaw onboard` runs, it creates its own token in
+/// `.openclaw/openclaw.json` under `gateway.auth.token`.
+pub fn read_openclaw_token(name: &str) -> Option<String> {
+    let inst_dir = config::instance_dir(name);
+    let config_path = inst_dir.join(".openclaw").join("openclaw.json");
+    let content = fs::read_to_string(config_path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+    config
+        .get("gateway")
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Generate a full OpenClaw config JSON for this instance.
 ///
 /// Creates a complete agent platform config: gateway, agents, models,
@@ -124,7 +141,8 @@ fn run_openclaw_setup(state: &InstanceState, env_vars: &[(String, String)]) -> R
 
     let mut cmd = Command::new(&program);
     cmd.args(&extra_args);
-    cmd.args(["onboard", "--install-daemon"]);
+    // Don't install as a system daemon — moltctrl manages the process itself
+    cmd.arg("onboard");
     cmd.current_dir(&inst_dir);
 
     // Isolate this instance's OpenClaw home
@@ -266,16 +284,20 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
     // We don't write any config — OpenClaw handles it all.
     run_openclaw_setup(state, &env_vars)?;
 
+    // OpenClaw creates its config under .openclaw/ inside OPENCLAW_HOME
+    let openclaw_subdir = inst_dir.join(".openclaw");
+    let config_path = openclaw_subdir.join("openclaw.json");
+
     // Only write a fallback config if onboard didn't create one
-    let config_path = inst_dir.join("openclaw.json");
     if !config_path.exists() {
+        fs::create_dir_all(&openclaw_subdir)?;
         let openclaw_config = generate_openclaw_config(state, &env_vars);
         fs::write(&config_path, &openclaw_config)
             .with_context(|| format!("Failed to write OpenClaw config to {:?}", config_path))?;
     }
 
     // Set state dir so each instance is fully isolated
-    let state_dir = inst_dir.join("openclaw-state");
+    let state_dir = inst_dir.join(".openclaw").join("state");
     fs::create_dir_all(&state_dir)?;
 
     let mut cmd = Command::new(&program);

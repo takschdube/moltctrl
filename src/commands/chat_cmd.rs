@@ -6,7 +6,12 @@ use crate::docker::DockerCompose;
 use crate::state::InstanceState;
 
 pub async fn run(name: &str) -> Result<()> {
-    let state = InstanceState::require(name)?;
+    let mut state = InstanceState::require(name)?;
+
+    // Prefer OpenClaw's token if available (onboard may have generated its own)
+    if let Some(oc_token) = crate::process_manager::read_openclaw_token(name) {
+        state.token = oc_token;
+    }
 
     // Check if the instance is running
     let compose_path = config::instance_dir(name).join("docker-compose.yml");

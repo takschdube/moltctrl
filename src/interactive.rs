@@ -279,7 +279,13 @@ pub async fn run_interactive() -> Result<()> {
     commands::lifecycle::start(&agent_name)?;
 
     // Load the instance state to get port, model, and token for summary + chat
-    let instance = state::InstanceState::load(&agent_name)?;
+    let mut instance = state::InstanceState::load(&agent_name)?;
+
+    // Use OpenClaw's token if onboard generated one (overrides moltctrl's token)
+    if let Some(oc_token) = crate::process_manager::read_openclaw_token(&agent_name) {
+        instance.token = oc_token.clone();
+        instance.save()?;
+    }
 
     // Print clean summary
     print_agent_summary(
