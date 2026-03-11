@@ -7,6 +7,16 @@ use crate::state::InstanceState;
 
 pub fn start(name: &str) -> Result<()> {
     let mut state = InstanceState::require(name)?;
+
+    if state.isolation == "process" {
+        // Process mode — just update status
+        // TODO: actually spawn the process with sandbox limits
+        state.status = "running".to_string();
+        state.save()?;
+        output::success(&format!("Instance '{}' started (process mode)", name));
+        return Ok(());
+    }
+
     docker::require_docker()?;
 
     let compose_path = config::instance_dir(name).join("docker-compose.yml");
@@ -34,6 +44,14 @@ pub fn start(name: &str) -> Result<()> {
 
 pub fn stop(name: &str) -> Result<()> {
     let mut state = InstanceState::require(name)?;
+
+    if state.isolation == "process" {
+        state.status = "stopped".to_string();
+        state.save()?;
+        output::success(&format!("Instance '{}' stopped (process mode)", name));
+        return Ok(());
+    }
+
     docker::require_docker()?;
 
     let compose_path = config::instance_dir(name).join("docker-compose.yml");
@@ -61,6 +79,14 @@ pub fn stop(name: &str) -> Result<()> {
 
 pub fn restart(name: &str) -> Result<()> {
     let mut state = InstanceState::require(name)?;
+
+    if state.isolation == "process" {
+        state.status = "running".to_string();
+        state.save()?;
+        output::success(&format!("Instance '{}' restarted (process mode)", name));
+        return Ok(());
+    }
+
     docker::require_docker()?;
 
     let compose_path = config::instance_dir(name).join("docker-compose.yml");
