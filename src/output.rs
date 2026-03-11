@@ -69,25 +69,29 @@ pub fn print_flush(msg: &str) {
 
 pub fn banner() {
     let c = color_enabled();
+    let lines = [
+        r"       ╭──╮",
+        r"      ( ◉◉ )",
+        r"   ╭───╯  ╰───╮",
+        r"  ╱╲   ╰──╯   ╱╲",
+        r" ╱  ╰────────╯  ╲",
+        r" ╲  ╭────────╮  ╱",
+        r"  ╲╱╭──╮╭──╮╲╱",
+        r"    ╯  ╰╯  ╰",
+    ];
+    println!();
+    for line in &lines {
+        if c {
+            println!("  {}", line.cyan());
+        } else {
+            println!("  {}", line);
+        }
+    }
     println!();
     if c {
-        println!("    {}", "  ⚡ m o l t c t r l".bold().cyan());
-        println!("    {}", "  AI Agent Instance Manager".dimmed());
-        println!();
-        println!("    {}", "    ┌──────┐".cyan());
-        println!("    {}", "    │ ◉  ◉ │".cyan());
-        println!("    {}", "    │  ──  │".cyan());
-        println!("    {}", "    └──┬┬──┘".cyan());
-        println!("    {}", "       ││".cyan());
+        println!("     {}", "moltctrl".bold().cyan());
     } else {
-        println!("    ⚡ m o l t c t r l");
-        println!("    AI Agent Instance Manager");
-        println!();
-        println!("      ┌──────┐");
-        println!("      │ ◉  ◉ │");
-        println!("      │  ──  │");
-        println!("      └──┬┬──┘");
-        println!("         ││");
+        println!("     moltctrl");
     }
     println!();
 }
