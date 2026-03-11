@@ -40,21 +40,15 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 ///
 /// Creates a complete agent platform config: gateway, agents, models,
 /// workspace, tools, sandbox, memory — the full experience, not just a proxy.
-fn generate_openclaw_config(state: &InstanceState, env_vars: &[(String, String)]) -> String {
+fn generate_openclaw_config(state: &InstanceState, _env_vars: &[(String, String)]) -> String {
     use serde_json::json;
 
     let inst_dir = config::instance_dir(&state.name);
     let workspace_dir = inst_dir.join("workspace");
     let model_id = format!("{}/{}", state.provider, state.model);
 
-    // Build auth section with API key from env vars
-    let mut auth = serde_json::Map::new();
-    for (key, value) in env_vars {
-        if key.ends_with("_API_KEY") || key.ends_with("_ACCESS_KEY_ID") {
-            auth.insert(key.clone(), json!(value));
-        }
-    }
-
+    // Only use keys OpenClaw actually recognizes.
+    // API keys are passed via environment variables, not the config file.
     let config = json!({
         "gateway": {
             "mode": "local",
@@ -92,37 +86,17 @@ fn generate_openclaw_config(state: &InstanceState, env_vars: &[(String, String)]
                 }
             ]
         },
-        "models": {
-            state.provider.clone(): {
-                "apiKey": format!("${{{}}}",
-                    env_vars.iter()
-                        .find(|(k, _)| k.ends_with("_API_KEY") || k.ends_with("_ACCESS_KEY_ID"))
-                        .map(|(k, _)| k.as_str())
-                        .unwrap_or("API_KEY")
-                )
-            }
-        },
-        "auth": auth,
         "tools": {
             "web": {
-                "search": { "enabled": true },
-                "fetch": { "enabled": true }
-            },
-            "sandbox": {
-                "enabled": true
+                "search": true,
+                "fetch": true
             }
         },
         "session": {
             "scope": "global"
         },
-        "memory": {
-            "enabled": true
-        },
         "skills": {
             "entries": {}
-        },
-        "logging": {
-            "redaction": { "enabled": true }
         }
     });
 
@@ -540,15 +514,18 @@ mod tests {
         assert_eq!(config["agents"]["list"][0]["id"], "main");
         assert_eq!(config["agents"]["list"][0]["default"], true);
 
-        // Auth
-        assert_eq!(config["auth"]["ANTHROPIC_API_KEY"], "sk-ant-test");
-
         // Tools
-        assert_eq!(config["tools"]["web"]["search"]["enabled"], true);
-        assert_eq!(config["tools"]["sandbox"]["enabled"], true);
+        assert_eq!(config["tools"]["web"]["search"], true);
+        assert_eq!(config["tools"]["web"]["fetch"], true);
 
         // Skills
         assert!(config["skills"]["entries"].is_object());
+
+        // Should NOT have invalid keys
+        assert!(config.get("auth").is_none());
+        assert!(config.get("models").is_none());
+        assert!(config.get("memory").is_none());
+        assert!(config.get("logging").is_none());
     }
 
     #[test]
