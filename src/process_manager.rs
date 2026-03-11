@@ -37,24 +37,47 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 }
 
 /// Resolve the OpenClaw command. Returns `(program, extra_args)`.
-/// Tries `openclaw` on PATH first; falls back to `npx openclaw`.
-fn resolve_openclaw_command() -> (String, Vec<String>) {
+///
+/// Resolution order:
+/// 1. `openclaw` binary on PATH (standalone install)
+/// 2. `npx @openclaw/openclaw` (if npx is available via Node.js)
+/// 3. Error with installation instructions
+fn resolve_openclaw_command() -> Result<(String, Vec<String>)> {
     if which_exists("openclaw") {
-        ("openclaw".to_string(), Vec::new())
-    } else {
-        ("npx".to_string(), vec!["openclaw".to_string()])
+        return Ok(("openclaw".to_string(), Vec::new()));
     }
+    if which_exists("npx") {
+        return Ok((
+            "npx".to_string(),
+            vec!["@openclaw/openclaw".to_string()],
+        ));
+    }
+    bail!(
+        "OpenClaw is not installed. Process mode requires the OpenClaw binary.\n\
+         Install it with: npm install -g @openclaw/openclaw\n\
+         Or use Docker mode: moltctrl create <name> --docker"
+    )
 }
 
 /// Check if a command exists on PATH.
+///
+/// Uses `where` on Windows and `which` on Unix-like systems.
 fn which_exists(cmd: &str) -> bool {
-    Command::new("which")
+    #[cfg(windows)]
+    let lookup = Command::new("where")
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .status();
+
+    #[cfg(not(windows))]
+    let lookup = Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    lookup.map(|s| s.success()).unwrap_or(false)
 }
 
 /// Spawn an OpenClaw process in the background with sandbox resource limits.
@@ -75,7 +98,7 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
         Vec::new()
     };
 
-    let (program, extra_args) = resolve_openclaw_command();
+    let (program, extra_args) = resolve_openclaw_command()?;
 
     // Open/create the log file for stdout/stderr redirection
     let log_file = OpenOptions::new()
@@ -126,9 +149,13 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
         }
     }
 
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("Failed to spawn '{}'. Is OpenClaw installed?", program))?;
+    let child = cmd.spawn().with_context(|| {
+        format!(
+            "Failed to spawn '{program}'. If OpenClaw is not installed, run:\n  \
+             npm install -g @openclaw/openclaw\n\
+             Or use Docker mode: moltctrl create <name> --docker"
+        )
+    })?;
 
     Ok(child.id())
 }

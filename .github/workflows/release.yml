@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version number (e.g. 0.3.0)'
-        required: true
+        description: 'Version number (e.g. 0.3.0) — leave blank to auto-calculate from latest tag'
+        required: false
         type: string
       bump_type:
         description: 'Release type'
@@ -32,17 +32,55 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set version
         id: version
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          # Strip leading 'v' if provided
-          VERSION="${VERSION#v}"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            # Manual version provided — strip leading 'v' and use it
+            VERSION="${INPUT_VERSION#v}"
+          else
+            # Auto-calculate from latest git tag
+            LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+            if [ -z "$LATEST_TAG" ]; then
+              echo "::error::No existing tags found. Please provide a version manually for the first release."
+              exit 1
+            fi
+            echo "Latest tag: ${LATEST_TAG}"
+            LATEST="${LATEST_TAG#v}"
+
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+
+            case "$BUMP_TYPE" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            echo "Auto-calculated version from ${LATEST} (${BUMP_TYPE} bump)"
+          fi
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Release version: ${VERSION} (tag: v${VERSION})"
-          echo "Bump type: ${{ github.event.inputs.bump_type }}"
+          echo "Bump type: ${BUMP_TYPE}"
 
       - name: Validate semver
         run: |
