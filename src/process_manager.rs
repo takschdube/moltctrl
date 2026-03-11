@@ -11,7 +11,7 @@ use crate::sandbox::{self, parse_mem_limit, SandboxConfig};
 use crate::state::InstanceState;
 
 /// Parse a `.env` file and return key-value pairs.
-/// Skips empty lines and lines starting with `#`.
+/// Skips empty lines and comment lines (starting with `#`).
 fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
     let file =
         File::open(path).with_context(|| format!("Failed to open .env file at {:?}", path))?;
