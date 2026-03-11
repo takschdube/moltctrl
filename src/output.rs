@@ -68,20 +68,26 @@ pub fn print_flush(msg: &str) {
 }
 
 pub fn banner() {
-    let cyan = color_enabled();
-    let lines = [
-        "┌─────────────────────────────────┐",
-        "│         m o l t c t r l         │",
-        "│    AI Agent Instance Manager    │",
-        "└─────────────────────────────────┘",
-    ];
+    let c = color_enabled();
     println!();
-    for line in &lines {
-        if cyan {
-            println!("    {}", line.cyan());
-        } else {
-            println!("    {}", line);
-        }
+    if c {
+        println!("    {}", "  ⚡ m o l t c t r l".bold().cyan());
+        println!("    {}", "  AI Agent Instance Manager".dimmed());
+        println!();
+        println!("    {}", "    ┌──────┐".cyan());
+        println!("    {}", "    │ ◉  ◉ │".cyan());
+        println!("    {}", "    │  ──  │".cyan());
+        println!("    {}", "    └──┬┬──┘".cyan());
+        println!("    {}", "       ││".cyan());
+    } else {
+        println!("    ⚡ m o l t c t r l");
+        println!("    AI Agent Instance Manager");
+        println!();
+        println!("      ┌──────┐");
+        println!("      │ ◉  ◉ │");
+        println!("      │  ──  │");
+        println!("      └──┬┬──┘");
+        println!("         ││");
     }
     println!();
 }
