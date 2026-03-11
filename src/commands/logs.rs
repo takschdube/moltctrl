@@ -9,7 +9,10 @@ pub fn run(name: &str, follow: bool, tail: &str) -> Result<()> {
     let state = InstanceState::require(name)?;
 
     if state.isolation == "process" {
-        output::info(&format!("Instance '{}' uses process mode — no container logs available.", name));
+        output::info(&format!(
+            "Instance '{}' uses process mode — no container logs available.",
+            name
+        ));
         output::info("Check your system process logs instead.");
         return Ok(());
     }
