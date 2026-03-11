@@ -8,10 +8,13 @@ mod commands;
 mod config;
 mod docker;
 mod health;
+mod interactive;
 mod output;
 mod port;
 mod process_manager;
 mod provider;
+#[allow(dead_code)]
+mod runtime;
 #[allow(dead_code)]
 mod sandbox;
 #[cfg(unix)]
@@ -44,7 +47,12 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => return interactive::run_interactive().await,
+    };
+
+    match command {
         Commands::Create {
             name,
             provider,

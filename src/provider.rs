@@ -7,11 +7,13 @@ use crate::output;
 use crate::validate;
 
 /// Provider definition with env var mapping and default model
+#[allow(dead_code)]
 pub struct ProviderInfo {
     pub name: &'static str,
     pub display: &'static str,
     pub env_key: Option<&'static str>,
     pub default_model: &'static str,
+    pub coming_soon: bool,
 }
 
 const PROVIDERS: &[ProviderInfo] = &[
@@ -20,38 +22,56 @@ const PROVIDERS: &[ProviderInfo] = &[
         display: "anthropic    (Claude)",
         env_key: Some("ANTHROPIC_API_KEY"),
         default_model: "claude-sonnet-4-20250514",
+        coming_soon: false,
     },
     ProviderInfo {
         name: "openai",
         display: "openai       (GPT)",
         env_key: Some("OPENAI_API_KEY"),
         default_model: "gpt-4o",
+        coming_soon: false,
     },
     ProviderInfo {
         name: "google",
         display: "google       (Gemini)",
         env_key: Some("GOOGLE_API_KEY"),
         default_model: "gemini-2.0-flash",
+        coming_soon: false,
     },
     ProviderInfo {
         name: "aws-bedrock",
-        display: "aws-bedrock  (AWS Bedrock)",
+        display: "aws-bedrock  (AWS Bedrock) — coming soon",
         env_key: Some("AWS_ACCESS_KEY_ID"),
         default_model: "anthropic.claude-sonnet-4-20250514-v1:0",
+        coming_soon: true,
     },
     ProviderInfo {
         name: "openrouter",
         display: "openrouter   (OpenRouter)",
         env_key: Some("OPENROUTER_API_KEY"),
         default_model: "anthropic/claude-sonnet-4-20250514",
+        coming_soon: false,
     },
     ProviderInfo {
         name: "ollama",
-        display: "ollama       (Local models)",
+        display: "ollama       (Local models) — coming soon",
         env_key: None,
         default_model: "llama3.1",
+        coming_soon: true,
     },
 ];
+
+/// Get all providers
+#[allow(dead_code)]
+pub fn all_providers() -> &'static [ProviderInfo] {
+    PROVIDERS
+}
+
+/// Check if a provider is coming soon
+#[allow(dead_code)]
+pub fn is_coming_soon(name: &str) -> bool {
+    get_provider(name).is_some_and(|p| p.coming_soon)
+}
 
 /// Look up provider info by name
 pub fn get_provider(name: &str) -> Option<&'static ProviderInfo> {

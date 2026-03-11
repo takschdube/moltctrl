@@ -1,199 +1,71 @@
 # moltctrl
 
-Security-hardened OpenClaw AI agent instance manager. Deploy, manage, and chat with isolated AI agent instances from a single binary.
+Security-hardened AI agent instance manager. Single binary, zero config.
 
 ## Install
 
-### Linux / macOS
-
+**Linux / macOS**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh
 ```
 
-With a specific version:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh -s -- v0.2.0
-```
-
-### Windows (PowerShell)
-
+**Windows (PowerShell)**
 ```powershell
 irm https://raw.githubusercontent.com/takschdube/moltctrl/main/install.ps1 | iex
 ```
 
-Or manually: download the `.zip` for your platform from the [releases page](https://github.com/takschdube/moltctrl/releases), extract, and add to your PATH.
-
-## Uninstall
-
-### Linux / macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh -s -- --uninstall
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/takschdube/moltctrl/main/install.ps1 | iex -Uninstall
-```
-
-Or manually:
-
-```bash
-# Linux/macOS
-sudo rm /usr/local/bin/moltctrl
-rm -rf ~/.moltctrl
-
-# Windows — remove moltctrl.exe from your PATH directory and delete %USERPROFILE%\.moltctrl
-```
-
 ## Quick Start
 
-```bash
-# Check system requirements
-moltctrl doctor
+Just run it:
 
-# Create an instance (uses process sandbox by default)
+```bash
+moltctrl
+```
+
+The interactive wizard walks you through provider selection, API key entry, and instance creation. No flags needed.
+
+## Headless / Scripting
+
+For CI pipelines and AI agents, use subcommands directly:
+
+```bash
+# Create an instance
 moltctrl create myagent --provider anthropic --api-key sk-ant-...
 
 # Chat with it
 moltctrl chat myagent
 
+# List all instances
+moltctrl list
+
 # Clean up
 moltctrl destroy myagent --force
 ```
 
-## Features
+Use `--json` for machine-readable output. Use `--force` to skip prompts.
 
-- **Single binary** — install in seconds, no runtime dependencies
-- **Built-in WebSocket chat** — no external tools needed
-- **Provider-agnostic** — Anthropic, OpenAI, Google, AWS Bedrock, OpenRouter, Ollama
-- **Cross-platform** — Linux, macOS, and Windows
-- **Dual isolation** — process sandbox (default) or Docker containers (opt-in with `--docker`)
-- **Auto port allocation** — finds available ports in the 18789-18889 range
-- **Pairing key management** — approve, list, and revoke access keys
+## Providers
 
-## Commands
+| Provider | Default Model | Status |
+|----------|--------------|--------|
+| `anthropic` | `claude-sonnet-4-20250514` | Available |
+| `openai` | `gpt-4o` | Available |
+| `google` | `gemini-2.0-flash` | Available |
+| `openrouter` | `anthropic/claude-sonnet-4-20250514` | Available |
+| `aws-bedrock` | `anthropic.claude-sonnet-4-20250514-v1:0` | Coming soon |
+| `ollama` | `llama3.1` | Coming soon |
 
-| Command | Description |
-|---------|-------------|
-| `create <name>` | Create and start a new instance |
-| `destroy <name>` | Stop and remove an instance and its data |
-| `list` | List all instances |
-| `status <name>` | Show detailed instance status |
-| `start <name>` | Start a stopped instance |
-| `stop <name>` | Stop a running instance |
-| `restart <name>` | Restart an instance |
-| `logs <name>` | View instance logs |
-| `token <name>` | Show or regenerate auth token |
-| `open <name>` | Open instance in browser |
-| `pair approve <name>` | Create a new pairing key |
-| `pair list <name>` | List all pairing keys |
-| `pair revoke <name>` | Revoke a pairing key |
-| `update <name>` | Update instance configuration |
-| `chat <name>` | Interactive WebSocket chat |
-| `doctor` | Check system requirements |
+Set via `--provider` flag, `MOLTCTRL_PROVIDER` env var, or interactive prompt. API keys are read from `--api-key`, standard env vars (e.g. `ANTHROPIC_API_KEY`), or prompted interactively.
 
-## Command Reference
+## Docker Mode
 
-### create
+By default, instances run in a lightweight process sandbox. For stronger isolation, use Docker:
 
 ```bash
-moltctrl create <name> [options]
+moltctrl create myagent --provider anthropic --api-key sk-ant-... --docker
 ```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--provider` | AI provider | interactive prompt |
-| `--api-key` | API key | env var or prompt |
-| `--model` | Model name | provider-specific |
-| `--port` | Host port | auto (18789-18889) |
-| `--image` | Docker image | `ghcr.io/openclaw/openclaw:latest` |
-| `--mem` | Memory limit | `2g` |
-| `--cpus` | CPU limit | `2` |
-| `--pids` | PID limit | `256` |
-| `--process` | Use process sandbox | default |
-| `--docker` | Use Docker isolation | |
-
-### destroy
-
-```bash
-moltctrl destroy <name> [--force]
-```
-
-### logs
-
-```bash
-moltctrl logs <name> [--follow] [--tail N]
-```
-
-### token
-
-```bash
-moltctrl token <name> [--regenerate]
-```
-
-### update
-
-```bash
-moltctrl update <name> [--model MODEL] [--mem MEM] [--cpus CPUS] [--pids PIDS]
-```
-
-### pair
-
-```bash
-moltctrl pair approve <name> [--label LABEL]
-moltctrl pair list <name>
-moltctrl pair revoke <name> --label LABEL
-```
-
-## Isolation Modes
-
-### Process Sandbox Mode (default)
-
-Lightweight isolation using OS-level resource limits:
-- **Linux/macOS**: `ulimit` via the `nix` crate (RLIMIT_AS, RLIMIT_NPROC, RLIMIT_CPU, RLIMIT_FSIZE, RLIMIT_CORE)
-- **Windows**: Job Objects via `windows-sys`
-
-### Docker Mode (opt-in with `--docker`)
-
-15 security hardening measures:
-- Non-root user (1000:1000)
-- Read-only root filesystem
-- All capabilities dropped (only NET_BIND_SERVICE, DAC_OVERRIDE added)
-- `no-new-privileges` security option
-- Memory, CPU, and PID limits
-- localhost-only port binding (127.0.0.1)
-- Named volumes only (no bind mounts)
-- Log rotation (10MB, 3 files)
-- Health checks every 30s
-
-Use `--docker` flag with `moltctrl create` to use Docker mode instead of the default process sandbox.
-
-## Provider Configuration
-
-| Provider | Env Variable | Default Model |
-|----------|-------------|---------------|
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
-| `openai` | `OPENAI_API_KEY` | `gpt-4o` |
-| `google` | `GOOGLE_API_KEY` | `gemini-2.0-flash` |
-| `aws-bedrock` | `AWS_ACCESS_KEY_ID` | `anthropic.claude-sonnet-4-20250514-v1:0` |
-| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4-20250514` |
-| `ollama` | *(none)* | `llama3.1` |
-
-Providers can be set via `--provider` flag, `MOLTCTRL_PROVIDER` env var, or interactive prompt.
-
-## Architecture
-
-```
-~/.moltctrl/
-└── instances/
-    └── myagent/
-        ├── instance.json      # Instance state and metadata
-        ├── .env               # Provider credentials (mode 600)
-        └── docker-compose.yml # Generated Docker Compose config (docker mode only)
-```
+Docker mode applies 15 security hardening measures including read-only rootfs, dropped capabilities, memory/CPU/PID limits, and localhost-only port binding.
 
 ## Building from Source
 
@@ -203,14 +75,6 @@ cd moltctrl
 cargo build --release
 sudo cp target/release/moltctrl /usr/local/bin/
 ```
-
-## Global Options
-
-| Flag | Description |
-|------|-------------|
-| `-v, --verbose` | Enable debug output |
-| `--no-color` | Disable colored output |
-| `--force` | Skip confirmation prompts |
 
 ## License
 
