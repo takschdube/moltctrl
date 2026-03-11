@@ -40,10 +40,7 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 ///
 /// Creates a complete agent platform config: gateway, agents, models,
 /// workspace, tools, sandbox, memory — the full experience, not just a proxy.
-fn generate_openclaw_config(
-    state: &InstanceState,
-    env_vars: &[(String, String)],
-) -> String {
+fn generate_openclaw_config(state: &InstanceState, env_vars: &[(String, String)]) -> String {
     use serde_json::json;
 
     let inst_dir = config::instance_dir(&state.name);
@@ -176,9 +173,9 @@ fn run_openclaw_setup(state: &InstanceState, env_vars: &[(String, String)]) -> R
 
     crate::output::info("Running OpenClaw setup...");
 
-    let status = cmd.status().with_context(|| {
-        format!("Failed to run '{program} onboard'. Is OpenClaw installed?")
-    })?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to run '{program} onboard'. Is OpenClaw installed?"))?;
 
     if !status.success() {
         crate::output::warn("OpenClaw setup did not complete — using default configuration");
@@ -581,11 +578,7 @@ mod tests {
         fs::create_dir_all(agents_dir.join("sessions")).unwrap();
 
         let soul_path = workspace_dir.join("SOUL.md");
-        fs::write(
-            &soul_path,
-            format!("# Agent: {}\n", state.name),
-        )
-        .unwrap();
+        fs::write(&soul_path, format!("# Agent: {}\n", state.name)).unwrap();
 
         assert!(soul_path.exists());
         assert!(agents_dir.join("sessions").exists());
