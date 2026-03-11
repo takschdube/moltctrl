@@ -118,10 +118,9 @@ fn run_openclaw_setup(state: &InstanceState, env_vars: &[(String, String)]) -> R
     let inst_dir = config::instance_dir(&state.name);
     fs::create_dir_all(&inst_dir)?;
 
-    // Write the config first so onboard finds it
-    let openclaw_config = generate_openclaw_config(state, env_vars);
-    let config_path = inst_dir.join("openclaw.json");
-    fs::write(&config_path, &openclaw_config)?;
+    // Do NOT write a config file — let OpenClaw's onboard create its own
+    // valid config through its interactive setup. We just set OPENCLAW_HOME
+    // to isolate this instance's state.
 
     let mut cmd = Command::new(&program);
     cmd.args(&extra_args);
@@ -130,10 +129,9 @@ fn run_openclaw_setup(state: &InstanceState, env_vars: &[(String, String)]) -> R
 
     // Isolate this instance's OpenClaw home
     cmd.env("OPENCLAW_HOME", &inst_dir);
-    cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
     cmd.env("PORT", state.port.to_string());
 
-    // Pass through provider credentials
+    // Pass through provider credentials so onboard can detect them
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
@@ -263,17 +261,18 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
     fs::create_dir_all(&inst_dir)
         .with_context(|| format!("Failed to create instance directory {:?}", inst_dir))?;
 
-    // Run OpenClaw's own setup within the instance's isolated environment.
-    // This creates workspace, agents, sessions — the full platform.
-    // Falls back to manual setup if onboard fails non-interactively.
+    // Run OpenClaw's own interactive setup within the instance's isolated
+    // environment. Onboard creates its own config, workspace, agents, etc.
+    // We don't write any config — OpenClaw handles it all.
     run_openclaw_setup(state, &env_vars)?;
 
-    // Ensure config is up to date (run_openclaw_setup writes it too,
-    // but regenerate in case state changed)
-    let openclaw_config = generate_openclaw_config(state, &env_vars);
+    // Only write a fallback config if onboard didn't create one
     let config_path = inst_dir.join("openclaw.json");
-    fs::write(&config_path, &openclaw_config)
-        .with_context(|| format!("Failed to write OpenClaw config to {:?}", config_path))?;
+    if !config_path.exists() {
+        let openclaw_config = generate_openclaw_config(state, &env_vars);
+        fs::write(&config_path, &openclaw_config)
+            .with_context(|| format!("Failed to write OpenClaw config to {:?}", config_path))?;
+    }
 
     // Set state dir so each instance is fully isolated
     let state_dir = inst_dir.join("openclaw-state");
@@ -286,9 +285,8 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
     cmd.stdout(log_file);
     cmd.stderr(log_stderr);
 
-    // Point OpenClaw to our generated config, state, and workspace
+    // Point OpenClaw to the instance's isolated home
     cmd.env("OPENCLAW_HOME", &inst_dir);
-    cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
     cmd.env("OPENCLAW_STATE_DIR", &state_dir);
     cmd.env("PORT", state.port.to_string());
 
