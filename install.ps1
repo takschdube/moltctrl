@@ -107,7 +107,7 @@ if (Test-Path $binPath) {
     Write-Host "  Location: $binPath"
     Write-Host ""
     Write-Host "Restart your terminal, then run:" -ForegroundColor Yellow
-    Write-Host "  moltctrl doctor"
+    Write-Host "  moltctrl"
 } else {
     Write-Host "Error: Installation failed — $binName not found." -ForegroundColor Red
     exit 1

@@ -126,17 +126,7 @@ pub async fn run(
         state.status = "created".to_string();
         state.save()?;
 
-        output::success(&format!("Instance '{}' created (process mode)", name));
-        println!();
-        output::info("Instance details:");
-        println!("  Name:      {}", name);
-        println!("  Provider:  {}", provider_name);
-        println!("  Model:     {}", model);
-        println!("  Port:      {}", port_num);
-        println!("  Isolation: process");
-        println!("  Token:     {}", auth_token);
-        println!();
-        output::info("Start the instance with: moltctrl start");
+        output::success(&format!("Instance '{}' created", name));
         return Ok(());
     }
 

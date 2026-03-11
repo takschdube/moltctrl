@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use anyhow::{bail, Result};
 use dialoguer::{Input, Password, Select};
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
 use crate::chat;
@@ -174,11 +175,29 @@ fn prompt_agent_name() -> Result<String> {
     Ok(name)
 }
 
-/// Print the welcome header
-fn print_welcome() {
+/// Print the styled agent summary after creation
+fn print_agent_summary(name: &str, provider: &str, model: &str, port: u16) {
+    use std::io::IsTerminal;
+    let use_color = std::io::stdout().is_terminal();
+
     println!();
-    println!("  moltctrl v{}", config::VERSION);
-    println!("  Security-hardened AI agent manager");
+    if use_color {
+        println!("  {} Agent ready!", "✓".bold().green());
+    } else {
+        println!("  ✓ Agent ready!");
+    }
+    println!();
+    if use_color {
+        println!("    {}     {}", "Name:".bold(), name);
+        println!("    {} {}", "Provider:".bold(), provider);
+        println!("    {}    {}", "Model:".bold(), model);
+        println!("    {}     {}", "Port:".bold(), port);
+    } else {
+        println!("    Name:     {}", name);
+        println!("    Provider: {}", provider);
+        println!("    Model:    {}", model);
+        println!("    Port:     {}", port);
+    }
     println!();
 }
 
@@ -188,11 +207,11 @@ pub async fn run_interactive() -> Result<()> {
         bail!("Interactive mode requires a terminal. Use subcommands for scripted usage.");
     }
 
-    print_welcome();
+    output::banner();
 
     let (provider, api_key) = if let Some(saved) = load_config() {
         // Config exists — ask whether to reuse
-        let choices = &["Use saved config", "Set up new agent"];
+        let choices = &["Use saved config", "Set up new provider"];
         let selection = Select::new()
             .with_prompt(format!(
                 "Found saved config (provider: {})",
@@ -232,7 +251,7 @@ pub async fn run_interactive() -> Result<()> {
             default_api_key: api_key.clone(),
         };
         save_config(&cfg)?;
-        output::success("Config saved to ~/.moltctrl/config.json");
+        output::success("Config saved");
 
         (provider.to_string(), api_key)
     };
@@ -257,18 +276,25 @@ pub async fn run_interactive() -> Result<()> {
     .await?;
 
     // Start the agent
-    println!();
     commands::lifecycle::start(&agent_name)?;
 
-    // Load the instance state to get port and token for chat
+    // Load the instance state to get port, model, and token for summary + chat
     let instance = state::InstanceState::load(&agent_name)?;
 
+    // Print clean summary
+    print_agent_summary(
+        &agent_name,
+        &instance.provider,
+        &instance.model,
+        instance.port,
+    );
+
     // Drop into chat
-    println!();
-    output::info(&format!(
-        "Entering chat with '{}'. Press Ctrl+C to disconnect.",
-        agent_name
-    ));
+    if std::io::stdout().is_terminal() {
+        println!("  {}", "Connecting to chat...".dimmed());
+    } else {
+        println!("  Connecting to chat...");
+    }
     println!();
     chat::start_chat(instance.port, &instance.token).await?;
 

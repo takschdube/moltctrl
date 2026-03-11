@@ -258,7 +258,7 @@ fn install_openclaw(node_path: &Path, dest: &Path) -> Result<()> {
             .unwrap()
             .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
     );
-    spinner.set_message("Installing OpenClaw via npm...");
+    spinner.set_message("Installing OpenClaw...");
     spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
     // Create a minimal package.json so npm install works in this directory.
@@ -294,7 +294,7 @@ fn install_openclaw(node_path: &Path, dest: &Path) -> Result<()> {
         );
     }
 
-    eprintln!("  OpenClaw installed successfully.");
+    eprintln!("  \u{2713} OpenClaw installed");
     Ok(())
 }
 
@@ -361,10 +361,7 @@ fn download_file(url: &str, dest: &Path, label: &str) -> Result<()> {
 
     pb.finish_and_clear();
     eprintln!(
-        "  Downloaded {} ({:.1} MB)",
-        dest.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        "  \u{2713} Download complete ({:.1} MB)",
         downloaded as f64 / 1_048_576.0
     );
 
@@ -431,7 +428,7 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     }
 
     spinner.finish_and_clear();
-    eprintln!("  Extraction complete.");
+    eprintln!("  \u{2713} Extraction complete");
     Ok(())
 }
 

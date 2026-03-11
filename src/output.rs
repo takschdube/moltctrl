@@ -67,6 +67,25 @@ pub fn print_flush(msg: &str) {
     let _ = io::stdout().flush();
 }
 
+pub fn banner() {
+    let cyan = color_enabled();
+    let lines = [
+        "┌─────────────────────────────────┐",
+        "│         m o l t c t r l         │",
+        "│    AI Agent Instance Manager    │",
+        "└─────────────────────────────────┘",
+    ];
+    println!();
+    for line in &lines {
+        if cyan {
+            println!("    {}", line.cyan());
+        } else {
+            println!("    {}", line);
+        }
+    }
+    println!();
+}
+
 pub fn spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(

@@ -157,6 +157,5 @@ fi
 
 echo ""
 echo "  Get started:"
-echo "    moltctrl doctor             # Verify setup"
-echo "    moltctrl create myagent     # Create your first instance"
+echo "    moltctrl"
 echo ""
