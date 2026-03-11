@@ -73,8 +73,8 @@ pub fn run(
 
     state.save()?;
 
-    // Re-render docker-compose.yml if resource limits changed
-    if mem.is_some() || cpus.is_some() || pids.is_some() {
+    // Re-render docker-compose.yml if resource limits changed (docker mode only)
+    if state.isolation != "process" && (mem.is_some() || cpus.is_some() || pids.is_some()) {
         let env_path = config::instance_dir(name).join(".env");
         let vars = TemplateVars {
             image: state.image.clone(),
