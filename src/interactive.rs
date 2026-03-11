@@ -291,10 +291,14 @@ pub async fn run_interactive() -> Result<()> {
 
     // Wait for OpenClaw to be ready before connecting to chat
     {
-        let spinner = output::spinner("Waiting for agent to be ready...");
+        let total_secs = 30u32;
         let mut ready = false;
-        for _ in 0..30 {
-            // Try connecting to the health/root endpoint
+        for i in 0..total_secs {
+            let remaining = total_secs - i;
+            output::print_flush(&format!(
+                "\r  Waiting for agent to be ready... {}s ",
+                remaining
+            ));
             if let Ok(resp) =
                 reqwest::get(format!("http://127.0.0.1:{}/health", instance.port)).await
             {
@@ -305,8 +309,11 @@ pub async fn run_interactive() -> Result<()> {
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        spinner.finish_and_clear();
-        if !ready {
+        // Clear the line
+        output::print_flush("\r                                            \r");
+        if ready {
+            output::success("Agent is ready!");
+        } else {
             output::warn("Agent may not be fully ready yet. Attempting to connect anyway...");
         }
     }
