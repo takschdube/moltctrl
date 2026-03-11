@@ -54,7 +54,7 @@ rm -rf ~/.moltctrl
 # Check system requirements
 moltctrl doctor
 
-# Create an instance
+# Create an instance (uses process sandbox by default)
 moltctrl create myagent --provider anthropic --api-key sk-ant-...
 
 # Chat with it
@@ -66,11 +66,11 @@ moltctrl destroy myagent --force
 
 ## Features
 
-- **Single binary** — install in seconds, no runtime dependencies beyond Docker
+- **Single binary** — install in seconds, no runtime dependencies
 - **Built-in WebSocket chat** — no external tools needed
 - **Provider-agnostic** — Anthropic, OpenAI, Google, AWS Bedrock, OpenRouter, Ollama
 - **Cross-platform** — Linux, macOS, and Windows
-- **Dual isolation** — Docker containers (15 security hardening measures) or process sandbox
+- **Dual isolation** — process sandbox (default) or Docker containers (opt-in with `--docker`)
 - **Auto port allocation** — finds available ports in the 18789-18889 range
 - **Pairing key management** — approve, list, and revoke access keys
 
@@ -113,8 +113,8 @@ moltctrl create <name> [options]
 | `--mem` | Memory limit | `2g` |
 | `--cpus` | CPU limit | `2` |
 | `--pids` | PID limit | `256` |
-| `--docker` | Use Docker isolation | default |
-| `--process` | Use process sandbox | |
+| `--process` | Use process sandbox | default |
+| `--docker` | Use Docker isolation | |
 
 ### destroy
 
@@ -150,7 +150,13 @@ moltctrl pair revoke <name> --label LABEL
 
 ## Isolation Modes
 
-### Docker Mode (default)
+### Process Sandbox Mode (default)
+
+Lightweight isolation using OS-level resource limits:
+- **Linux/macOS**: `ulimit` via the `nix` crate (RLIMIT_AS, RLIMIT_NPROC, RLIMIT_CPU, RLIMIT_FSIZE, RLIMIT_CORE)
+- **Windows**: Job Objects via `windows-sys`
+
+### Docker Mode (opt-in with `--docker`)
 
 15 security hardening measures:
 - Non-root user (1000:1000)
@@ -163,13 +169,7 @@ moltctrl pair revoke <name> --label LABEL
 - Log rotation (10MB, 3 files)
 - Health checks every 30s
 
-### Process Sandbox Mode
-
-Lightweight isolation using OS-level resource limits:
-- **Linux/macOS**: `ulimit` via the `nix` crate (RLIMIT_AS, RLIMIT_NPROC, RLIMIT_CPU, RLIMIT_FSIZE, RLIMIT_CORE)
-- **Windows**: Job Objects via `windows-sys`
-
-Use `--process` flag with `moltctrl create` to use process mode instead of Docker.
+Use `--docker` flag with `moltctrl create` to use Docker mode instead of the default process sandbox.
 
 ## Provider Configuration
 
@@ -192,7 +192,7 @@ Providers can be set via `--provider` flag, `MOLTCTRL_PROVIDER` env var, or inte
     └── myagent/
         ├── instance.json      # Instance state and metadata
         ├── .env               # Provider credentials (mode 600)
-        └── docker-compose.yml # Generated Docker Compose config
+        └── docker-compose.yml # Generated Docker Compose config (docker mode only)
 ```
 
 ## Building from Source

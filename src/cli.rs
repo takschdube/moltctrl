@@ -63,11 +63,11 @@ pub enum Commands {
         #[arg(long)]
         pids: Option<String>,
 
-        /// Use Docker isolation mode
+        /// Use Docker isolation mode (instead of default process sandbox)
         #[arg(long, conflicts_with = "process")]
         docker: bool,
 
-        /// Use process sandbox isolation mode
+        /// Use process sandbox isolation mode (default)
         #[arg(long, conflicts_with = "docker")]
         process: bool,
     },

@@ -10,6 +10,7 @@ mod docker;
 mod health;
 mod output;
 mod port;
+mod process_manager;
 mod provider;
 #[allow(dead_code)]
 mod sandbox;
@@ -54,9 +55,10 @@ async fn run(cli: Cli) -> Result<()> {
             mem,
             cpus,
             pids,
-            docker: _,
-            process,
+            docker,
+            process: _,
         } => {
+            let use_process = !docker;
             commands::create::run(
                 &name,
                 provider.as_deref(),
@@ -67,7 +69,7 @@ async fn run(cli: Cli) -> Result<()> {
                 mem.as_deref(),
                 cpus.as_deref(),
                 pids.as_deref(),
-                process,
+                use_process,
             )
             .await
         }

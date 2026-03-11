@@ -7,6 +7,7 @@ pub mod docker;
 pub mod health;
 pub mod output;
 pub mod port;
+pub mod process_manager;
 pub mod provider;
 #[allow(dead_code)]
 pub mod sandbox;
