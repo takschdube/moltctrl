@@ -4,29 +4,48 @@ Security-hardened OpenClaw AI agent instance manager. Deploy, manage, and chat w
 
 ## Install
 
+### Linux / macOS
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh
 ```
 
-Or with a specific version:
+With a specific version:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh -s -- v0.2.0
 ```
 
-Or manually: download the binary for your platform from the [releases page](https://github.com/takschdube/moltctrl/releases).
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/takschdube/moltctrl/main/install.ps1 | iex
+```
+
+Or manually: download the `.zip` for your platform from the [releases page](https://github.com/takschdube/moltctrl/releases), extract, and add to your PATH.
 
 ## Uninstall
+
+### Linux / macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takschdube/moltctrl/main/install.sh | sh -s -- --uninstall
 ```
 
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/takschdube/moltctrl/main/install.ps1 | iex -Uninstall
+```
+
 Or manually:
 
 ```bash
+# Linux/macOS
 sudo rm /usr/local/bin/moltctrl
 rm -rf ~/.moltctrl
+
+# Windows — remove moltctrl.exe from your PATH directory and delete %USERPROFILE%\.moltctrl
 ```
 
 ## Quick Start
