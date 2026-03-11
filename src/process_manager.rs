@@ -86,6 +86,7 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
 
     let mut cmd = Command::new(&program);
     cmd.args(&extra_args);
+    cmd.args(["gateway", "--port", &state.port.to_string()]);
     cmd.current_dir(&inst_dir);
     cmd.stdout(log_file);
     cmd.stderr(log_stderr);
