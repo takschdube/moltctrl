@@ -47,10 +47,7 @@ fn resolve_openclaw_command() -> Result<(String, Vec<String>)> {
         return Ok(("openclaw".to_string(), Vec::new()));
     }
     if which_exists("npx") {
-        return Ok((
-            "npx".to_string(),
-            vec!["@openclaw/openclaw".to_string()],
-        ));
+        return Ok(("npx".to_string(), vec!["@openclaw/openclaw".to_string()]));
     }
     bail!(
         "OpenClaw is not installed. Process mode requires the OpenClaw binary.\n\
