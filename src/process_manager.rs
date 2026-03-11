@@ -38,43 +38,16 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
 
 /// Resolve the OpenClaw command. Returns `(program, extra_args)`.
 ///
-/// Resolution order:
-/// 1. `openclaw` binary on PATH (standalone install)
-/// 2. `npx @openclaw/openclaw` (if npx is available via Node.js)
-/// 3. Error with installation instructions
+/// First ensures the runtime (Node.js + OpenClaw) is installed,
+/// downloading automatically if needed. Then returns the command to invoke.
 fn resolve_openclaw_command() -> Result<(String, Vec<String>)> {
-    if which_exists("openclaw") {
-        return Ok(("openclaw".to_string(), Vec::new()));
-    }
-    if which_exists("npx") {
-        return Ok(("npx".to_string(), vec!["@openclaw/openclaw".to_string()]));
-    }
-    bail!(
-        "OpenClaw is not installed. Process mode requires the OpenClaw binary.\n\
-         Install it with: npm install -g @openclaw/openclaw\n\
-         Or use Docker mode: moltctrl create <name> --docker"
-    )
-}
+    use crate::runtime;
 
-/// Check if a command exists on PATH.
-///
-/// Uses `where` on Windows and `which` on Unix-like systems.
-fn which_exists(cmd: &str) -> bool {
-    #[cfg(windows)]
-    let lookup = Command::new("where")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    // Auto-download Node.js + OpenClaw if not present
+    runtime::ensure_runtime()?;
 
-    #[cfg(not(windows))]
-    let lookup = Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    lookup.map(|s| s.success()).unwrap_or(false)
+    // Get the resolved command
+    runtime::openclaw_command()
 }
 
 /// Spawn an OpenClaw process in the background with sandbox resource limits.
