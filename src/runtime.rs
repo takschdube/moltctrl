@@ -252,14 +252,7 @@ fn install_openclaw(node_path: &Path, dest: &Path) -> Result<()> {
         bail!("npm not found at {}", npm_path.display());
     }
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
-    );
-    spinner.set_message("Installing OpenClaw...");
-    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+    eprintln!("  Installing OpenClaw...");
 
     // Create a minimal package.json so npm install works in this directory.
     let pkg_json = dest.join("package.json");
@@ -270,28 +263,19 @@ fn install_openclaw(node_path: &Path, dest: &Path) -> Result<()> {
         )?;
     }
 
-    // Run: node <npm-cli.js> install openclaw
+    // Run: node <npm-cli.js> install openclaw — stream output so user sees progress
     let output = Command::new(node_path.as_os_str())
         .arg(npm_path.as_os_str())
         .arg("install")
         .arg("openclaw")
         .current_dir(dest)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .output()
         .context("Failed to run npm install")?;
 
-    spinner.finish_and_clear();
-
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        bail!(
-            "npm install openclaw failed (exit {}):\nstdout: {}\nstderr: {}",
-            output.status,
-            stdout,
-            stderr
-        );
+        bail!("npm install openclaw failed (exit {})", output.status);
     }
 
     eprintln!("  \u{2713} OpenClaw installed");
