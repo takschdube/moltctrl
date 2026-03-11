@@ -7,13 +7,14 @@ services:
     restart: unless-stopped
 
     # --- Security hardening ---
-    user: "1000:1000"
-    read_only: true
     cap_drop:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
       - DAC_OVERRIDE
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
 
