@@ -1,6 +1,6 @@
 [package]
 name = "moltctrl"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 description = "Security-hardened OpenClaw AI agent instance manager"
 license = "MIT"
