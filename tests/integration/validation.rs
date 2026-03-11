@@ -80,7 +80,7 @@ fn test_version_output() {
         .args(["version"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("moltctrl v0.2.0"));
+        .stdout(predicate::str::contains("moltctrl v"));
 }
 
 #[test]

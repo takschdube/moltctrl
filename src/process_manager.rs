@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::config;
+#[cfg(unix)]
 use crate::sandbox::{self, parse_mem_limit, SandboxConfig};
 use crate::state::InstanceState;
 
@@ -183,7 +184,7 @@ pub fn kill_process(pid: u32) -> Result<()> {
     #[cfg(windows)]
     {
         let status = Command::new("taskkill")
-            .args(&["/PID", &pid.to_string(), "/F"])
+            .args(["/PID", &pid.to_string(), "/F"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -224,7 +225,7 @@ pub fn is_process_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
         Command::new("tasklist")
-            .args(&["/FI", &format!("PID eq {}", pid), "/NH"])
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
             .output()
             .map(|output| {
                 let stdout = String::from_utf8_lossy(&output.stdout);
