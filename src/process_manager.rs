@@ -88,8 +88,8 @@ fn generate_openclaw_config(state: &InstanceState, _env_vars: &[(String, String)
         },
         "tools": {
             "web": {
-                "search": true,
-                "fetch": true
+                "search": {},
+                "fetch": {}
             }
         },
         "session": {
@@ -515,8 +515,8 @@ mod tests {
         assert_eq!(config["agents"]["list"][0]["default"], true);
 
         // Tools
-        assert_eq!(config["tools"]["web"]["search"], true);
-        assert_eq!(config["tools"]["web"]["fetch"], true);
+        assert!(config["tools"]["web"]["search"].is_object());
+        assert!(config["tools"]["web"]["fetch"].is_object());
 
         // Skills
         assert!(config["skills"]["entries"].is_object());
