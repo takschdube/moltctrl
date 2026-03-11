@@ -139,11 +139,9 @@ pub fn openclaw_command() -> Result<(String, Vec<String>)> {
     // 2. Managed installation.
     let base_dir = moltctrl_home()?;
     let openclaw_dir = base_dir.join("openclaw");
-    let openclaw_bin = openclaw_bin_path(&openclaw_dir);
 
-    if !openclaw_bin.exists() {
-        bail!("OpenClaw not found. Run `ensure_runtime()` first, or install openclaw globally.");
-    }
+    // Find the actual JS entry point from the installed package
+    let js_entry = find_openclaw_entry(&openclaw_dir)?;
 
     // We need to figure out which node to invoke it with.
     let node = match get_system_node() {
@@ -160,8 +158,58 @@ pub fn openclaw_command() -> Result<(String, Vec<String>)> {
 
     Ok((
         node.to_string_lossy().into_owned(),
-        vec![openclaw_bin.to_string_lossy().into_owned()],
+        vec![js_entry.to_string_lossy().into_owned()],
     ))
+}
+
+/// Find the actual JavaScript entry point for the openclaw package.
+/// Reads package.json "bin" field to find the real script path.
+fn find_openclaw_entry(openclaw_dir: &Path) -> Result<PathBuf> {
+    let pkg_json_path = openclaw_dir
+        .join("node_modules")
+        .join("openclaw")
+        .join("package.json");
+
+    if pkg_json_path.exists() {
+        let content = std::fs::read_to_string(&pkg_json_path)
+            .context("Failed to read openclaw package.json")?;
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            // Check "bin" field — can be a string or an object
+            if let Some(bin) = pkg.get("bin") {
+                let entry = if let Some(s) = bin.as_str() {
+                    Some(s.to_string())
+                } else if let Some(obj) = bin.as_object() {
+                    obj.get("openclaw")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                };
+                if let Some(entry) = entry {
+                    let resolved = openclaw_dir
+                        .join("node_modules")
+                        .join("openclaw")
+                        .join(entry);
+                    if resolved.exists() {
+                        return Ok(resolved);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: try common entry points
+    for candidate in &["dist/index.js", "bin/openclaw.js", "index.js"] {
+        let path = openclaw_dir
+            .join("node_modules")
+            .join("openclaw")
+            .join(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    bail!("OpenClaw not found. Run `ensure_runtime()` first, or install openclaw globally.");
 }
 
 // ---------------------------------------------------------------------------
