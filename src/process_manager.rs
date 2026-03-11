@@ -55,28 +55,34 @@ pub fn read_openclaw_token(name: &str) -> Option<String> {
 
 /// Generate a full OpenClaw config JSON for this instance.
 ///
-/// Creates a complete agent platform config: gateway, agents, models,
-/// workspace, tools, sandbox, memory — the full experience, not just a proxy.
+/// Based on the validated schema from a real `openclaw onboard` run.
+/// This skips onboard entirely — no redundant prompts for provider/key
+/// that moltctrl already collected. API keys are passed via env vars.
 fn generate_openclaw_config(state: &InstanceState, _env_vars: &[(String, String)]) -> String {
     use serde_json::json;
 
     let inst_dir = config::instance_dir(&state.name);
-    let workspace_dir = inst_dir.join("workspace");
+    let workspace_dir = inst_dir.join(".openclaw").join("workspace");
     let model_id = format!("{}/{}", state.provider, state.model);
+    let token_name = format!("moltctrl-{}", state.name);
+    let now = chrono::Utc::now().to_rfc3339();
 
-    // Only use keys OpenClaw actually recognizes.
-    // API keys are passed via environment variables, not the config file.
+    // Build auth profile key based on provider
+    let auth_profile_key = format!("{}:default", state.provider);
+
     let config = json!({
-        "gateway": {
-            "mode": "local",
-            "port": state.port,
-            "bind": "loopback",
-            "auth": {
-                "mode": "token",
-                "token": state.token
-            },
-            "reload": {
-                "mode": "hybrid"
+        "wizard": {
+            "lastRunAt": now,
+            "lastRunVersion": "2026.3.8",
+            "lastRunCommand": "onboard",
+            "lastRunMode": "local"
+        },
+        "auth": {
+            "profiles": {
+                (auth_profile_key): {
+                    "provider": state.provider,
+                    "mode": "token"
+                }
             }
         },
         "agents": {
@@ -85,14 +91,19 @@ fn generate_openclaw_config(state: &InstanceState, _env_vars: &[(String, String)
                     "primary": model_id
                 },
                 "workspace": workspace_dir.to_string_lossy(),
+                "contextPruning": {
+                    "mode": "cache-ttl",
+                    "ttl": "1h"
+                },
+                "compaction": {
+                    "mode": "safeguard"
+                },
+                "heartbeat": {
+                    "every": "30m"
+                },
                 "maxConcurrent": 4,
                 "subagents": {
-                    "maxConcurrent": 8,
-                    "maxSpawnDepth": 2,
-                    "maxChildrenPerAgent": 5
-                },
-                "sandbox": {
-                    "mode": "all"
+                    "maxConcurrent": 8
                 }
             },
             "list": [
@@ -104,82 +115,70 @@ fn generate_openclaw_config(state: &InstanceState, _env_vars: &[(String, String)
             ]
         },
         "tools": {
-            "web": {
-                "search": {},
-                "fetch": {}
-            }
+            "profile": "coding"
+        },
+        "messages": {
+            "ackReactionScope": "group-mentions"
+        },
+        "commands": {
+            "native": "auto",
+            "nativeSkills": "auto",
+            "restart": true,
+            "ownerDisplay": "raw"
         },
         "session": {
-            "scope": "global"
+            "dmScope": "per-channel-peer"
         },
-        "skills": {
-            "entries": {}
+        "hooks": {
+            "internal": {
+                "enabled": true,
+                "entries": {
+                    "boot-md": { "enabled": true },
+                    "bootstrap-extra-files": { "enabled": true },
+                    "command-logger": { "enabled": true },
+                    "session-memory": { "enabled": true }
+                }
+            }
+        },
+        "gateway": {
+            "port": state.port,
+            "mode": "local",
+            "bind": "loopback",
+            "auth": {
+                "mode": "token",
+                "token": state.token,
+                "tokenName": token_name
+            },
+            "tailscale": {
+                "mode": "off",
+                "resetOnExit": false
+            },
+            "nodes": {
+                "denyCommands": [
+                    "camera.snap", "camera.clip", "screen.record",
+                    "contacts.add", "calendar.add", "reminders.add", "sms.send"
+                ]
+            }
+        },
+        "meta": {
+            "lastTouchedVersion": "2026.3.8",
+            "lastTouchedAt": now
         }
     });
 
     serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Run `openclaw onboard` within the instance's isolated environment.
+/// Create workspace directory structure and essential files for OpenClaw.
 ///
-/// This lets OpenClaw create its own directory structure, workspace files,
-/// agent config, and everything else it needs — the full platform setup,
-/// not just a minimal config. We point `OPENCLAW_HOME` at the instance dir
-/// so everything stays isolated per instance.
-fn run_openclaw_setup(state: &InstanceState, env_vars: &[(String, String)]) -> Result<()> {
-    use crate::runtime;
-
-    runtime::ensure_runtime()?;
-    let (program, extra_args) = runtime::openclaw_command()?;
-
-    let inst_dir = config::instance_dir(&state.name);
-    fs::create_dir_all(&inst_dir)?;
-
-    // Do NOT write a config file — let OpenClaw's onboard create its own
-    // valid config through its interactive setup. We just set OPENCLAW_HOME
-    // to isolate this instance's state.
-
-    let mut cmd = Command::new(&program);
-    cmd.args(&extra_args);
-    // Don't install as a system daemon — moltctrl manages the process itself
-    cmd.arg("onboard");
-    cmd.current_dir(&inst_dir);
-
-    // Isolate this instance's OpenClaw home
-    cmd.env("OPENCLAW_HOME", &inst_dir);
-    cmd.env("PORT", state.port.to_string());
-
-    // Pass through provider credentials so onboard can detect them
-    for (key, value) in env_vars {
-        cmd.env(key, value);
-    }
-
-    // Let the user interact with OpenClaw's setup directly —
-    // stdin/stdout/stderr all inherited. The setup is already sandboxed
-    // because OPENCLAW_HOME points to the instance's isolated directory.
-    cmd.stdin(std::process::Stdio::inherit());
-    cmd.stdout(std::process::Stdio::inherit());
-    cmd.stderr(std::process::Stdio::inherit());
-
-    crate::output::info("Running OpenClaw setup...");
-
-    let status = cmd
-        .status()
-        .with_context(|| format!("Failed to run '{program} onboard'. Is OpenClaw installed?"))?;
-
-    if !status.success() {
-        crate::output::warn("OpenClaw setup did not complete — using default configuration");
-        setup_workspace_fallback(state)?;
-    }
-
-    Ok(())
-}
-
-/// Fallback workspace setup when `openclaw onboard` isn't available or fails
-/// in non-interactive mode. Creates the essential workspace files manually.
+/// Sets up the workspace, agent dirs, SOUL.md, and TOOLS.md that OpenClaw
+/// expects to find on startup.
 fn setup_workspace_fallback(state: &InstanceState) -> Result<()> {
     let inst_dir = config::instance_dir(&state.name);
+    // Config points workspace at .openclaw/workspace, create both for compat
+    let oc_workspace = inst_dir.join(".openclaw").join("workspace");
     let workspace_dir = inst_dir.join("workspace");
+    fs::create_dir_all(&oc_workspace)?;
     fs::create_dir_all(&workspace_dir)?;
 
     // Create agents directory structure OpenClaw expects
@@ -279,22 +278,19 @@ pub fn spawn_process(state: &InstanceState, log_path: &Path) -> Result<u32> {
     fs::create_dir_all(&inst_dir)
         .with_context(|| format!("Failed to create instance directory {:?}", inst_dir))?;
 
-    // Run OpenClaw's own interactive setup within the instance's isolated
-    // environment. Onboard creates its own config, workspace, agents, etc.
-    // We don't write any config — OpenClaw handles it all.
-    run_openclaw_setup(state, &env_vars)?;
-
-    // OpenClaw creates its config under .openclaw/ inside OPENCLAW_HOME
+    // Generate OpenClaw config directly — no onboard wizard needed.
+    // moltctrl already collected provider, API key, and model from the user.
+    // Running onboard would redundantly ask for these again.
     let openclaw_subdir = inst_dir.join(".openclaw");
     let config_path = openclaw_subdir.join("openclaw.json");
 
-    // Only write a fallback config if onboard didn't create one
-    if !config_path.exists() {
-        fs::create_dir_all(&openclaw_subdir)?;
-        let openclaw_config = generate_openclaw_config(state, &env_vars);
-        fs::write(&config_path, &openclaw_config)
-            .with_context(|| format!("Failed to write OpenClaw config to {:?}", config_path))?;
-    }
+    fs::create_dir_all(&openclaw_subdir)?;
+    let openclaw_config = generate_openclaw_config(state, &env_vars);
+    fs::write(&config_path, &openclaw_config)
+        .with_context(|| format!("Failed to write OpenClaw config to {:?}", config_path))?;
+
+    // Create workspace and agent directory structure
+    setup_workspace_fallback(state)?;
 
     // Set state dir so each instance is fully isolated
     let state_dir = inst_dir.join(".openclaw").join("state");
@@ -518,11 +514,27 @@ mod tests {
         let config_str = generate_openclaw_config(&state, &env_vars);
         let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
 
-        // Gateway
+        // Gateway — validated schema fields
         assert_eq!(config["gateway"]["mode"], "local");
         assert_eq!(config["gateway"]["port"], 18789);
         assert_eq!(config["gateway"]["auth"]["mode"], "token");
+        assert_eq!(
+            config["gateway"]["auth"]["tokenName"],
+            "moltctrl-test-agent"
+        );
         assert_eq!(config["gateway"]["bind"], "loopback");
+        assert_eq!(config["gateway"]["tailscale"]["mode"], "off");
+        assert!(config["gateway"]["nodes"]["denyCommands"].is_array());
+
+        // Auth profiles
+        assert_eq!(
+            config["auth"]["profiles"]["anthropic:default"]["provider"],
+            "anthropic"
+        );
+        assert_eq!(
+            config["auth"]["profiles"]["anthropic:default"]["mode"],
+            "token"
+        );
 
         // Agents
         assert_eq!(
@@ -530,19 +542,28 @@ mod tests {
             "anthropic/claude-sonnet-4-20250514"
         );
         assert_eq!(config["agents"]["defaults"]["maxConcurrent"], 4);
-        assert_eq!(config["agents"]["defaults"]["sandbox"]["mode"], "all");
+        assert_eq!(
+            config["agents"]["defaults"]["contextPruning"]["mode"],
+            "cache-ttl"
+        );
+        assert_eq!(
+            config["agents"]["defaults"]["compaction"]["mode"],
+            "safeguard"
+        );
         assert_eq!(config["agents"]["list"][0]["id"], "main");
         assert_eq!(config["agents"]["list"][0]["default"], true);
 
-        // Tools
-        assert!(config["tools"]["web"]["search"].is_object());
-        assert!(config["tools"]["web"]["fetch"].is_object());
+        // Tools — uses profile string, not nested objects
+        assert_eq!(config["tools"]["profile"], "coding");
 
-        // Skills
-        assert!(config["skills"]["entries"].is_object());
+        // Hooks
+        assert_eq!(config["hooks"]["internal"]["enabled"], true);
+
+        // Wizard metadata
+        assert!(config["wizard"]["lastRunAt"].is_string());
+        assert!(config["meta"]["lastTouchedAt"].is_string());
 
         // Should NOT have invalid keys
-        assert!(config.get("auth").is_none());
         assert!(config.get("models").is_none());
         assert!(config.get("memory").is_none());
         assert!(config.get("logging").is_none());
